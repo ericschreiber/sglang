@@ -174,10 +174,12 @@ def bench(numerics: bool = False):
     cu_times = get_times("fused_moe_w8a8", prof)
 
     f1,f2, m1,m2 = get_stats(len(set(topk_ids.flatten().tolist())))
-    print(f"Triton moe up {(f1/1e6)/(t_times[0]):.2f} TFLOPs, {(m1/1e3)/t_times[0]:.2f} GB/s")
+    if numerics:
+        print(f"Triton moe up {(f1/1e6)/(t_times[0]):.2f} TFLOPs, {(m1/1e3)/t_times[0]:.2f} GB/s")
     print(f"AA moe up {(f1/1e6)/(cu_times[0]):.2f} TFLOPs, {(m1/1e3)/cu_times[0]:.2f} GB/s, speed relative to triton {t_times[0]*100/cu_times[0]:.2f}%")
 
-    print(f"Triton moe down {(f2/1e6)/(t_times[1]):.2f} TFLOPs, {(m2/1e3)/t_times[1]:.2f} GB/s")
+    if numerics:
+        print(f"Triton moe down {(f2/1e6)/(t_times[1]):.2f} TFLOPs, {(m2/1e3)/t_times[1]:.2f} GB/s")
     print(f"AA moe down {(f2/1e6)/(cu_times[1]):.2f} TFLOPs, {(m2/1e3)/cu_times[1]:.2f} GB/s, speed relative to triton {t_times[1]*100/cu_times[1]:.2f}%")
 
     if numerics:
