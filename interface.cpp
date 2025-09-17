@@ -38,6 +38,7 @@ void fused_moe_w8a8(MOE_ARGS);
 void fused_moe_w8a8_regtiling(MOE_ARGS);
 void fused_moe_w8a8_prefetching(MOE_ARGS);
 void fused_moe_w8a8_fp16tc(MOE_ARGS);
+void fused_moe_w8a8_fp16tc_prefetch(MOE_ARGS);
 
 void fused_moe_w8a8_fp16tc(
         const __nv_fp8_e4m3* x,
@@ -82,6 +83,9 @@ torch::Tensor fused_moe_launcher(
             break;
         case 16:
             fused_moe_w8a8_fp16tc(MOE_CALL);
+            break;
+        case 161:
+            fused_moe_w8a8_fp16tc_prefetch(MOE_CALL);
             break;
     }
     return out;

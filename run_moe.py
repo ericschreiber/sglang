@@ -21,7 +21,8 @@ my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "fused_moe_w8a8.cu",
                                         "./moe_kernels/fused_moe_w8a8_regtiling.cu",
                                         "./moe_kernels/fused_moe_w8a8_prefetching.cu",
-                                        "./moe_kernels/fused_moe_w8a8_fp16tc.cu"], extra_cuda_cflags=["-lineinfo"])
+                                        "./moe_kernels/fused_moe_w8a8_fp16tc.cu",
+                                        "./moe_kernels/fused_moe_w8a8_fp16tc_prefetch.cu"], extra_cuda_cflags=["-lineinfo"])
 
 def get_stats(activated_experts):
     flops_1 = 2*num_tokens*w1.shape[1]*w1.shape[2]
@@ -45,7 +46,7 @@ def get_times(kernel_name, prof):
             ret.append(e.device_time_total)
     return ret
 
-KERNEL_VARIANT=16
+KERNEL_VARIANT=161
 
 def run_moe(topk_ids, eps=1e-10):
     x = torch.empty((num_tokens, hidden_size), dtype=torch.bfloat16).normal_(mean=0, std=0.05)
@@ -202,12 +203,12 @@ for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "
     config = try_get_optimal_moe_config(w1.shape, w2.shape, top_k, config_dtype, block_shape=block_shape, M=num_tokens)
 
 # Ideal
-    # print("benchmarking ideal")
-    # topk_ids = torch.arange(top_k).repeat(num_tokens,1).to(torch.int32)
-    # if profiling:
-    #     bench(numerics)
-    # else:
-    #     run_moe(topk_ids)
+#     print("benchmarking ideal")
+#     topk_ids = torch.arange(top_k).repeat(num_tokens,1).to(torch.int32)
+#     if profiling:
+#         bench(numerics)
+#     else:
+#         run_moe(topk_ids)
 
 
 # Uniform
