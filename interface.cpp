@@ -55,6 +55,7 @@ void fused_moe_w8a8_fp16tc(
         int N,
         int sorted_num
         );
+void fused_moe_w8a8_smem(MOE_ARGS);
 
 torch::Tensor fused_moe_launcher(
         torch::Tensor& x,
@@ -76,10 +77,16 @@ torch::Tensor fused_moe_launcher(
             fused_moe_w8a8(MOE_CALL);
             break;
         case 1:
-            fused_moe_w8a8_regtiling(MOE_CALL);
+            fused_moe_w8a8_prefetching(MOE_CALL);
             break;
         case 2:
-            fused_moe_w8a8_prefetching(MOE_CALL);
+            fused_moe_w8a8_smem(MOE_CALL);
+            break;
+        case 16:
+            fused_moe_w8a8_fp16tc(MOE_CALL);
+            break;
+        case 161:
+            fused_moe_w8a8_fp16tc_prefetch(MOE_CALL);
             break;
         case 16:
             fused_moe_w8a8_fp16tc(MOE_CALL);

@@ -19,8 +19,9 @@ torch.utils.cpp_extension.COMMON_NVCC_FLAGS = []
 
 my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "fused_moe_w8a8.cu",
-                                        "./moe_kernels/fused_moe_w8a8_regtiling.cu",
                                         "./moe_kernels/fused_moe_w8a8_prefetching.cu",
+                                        "./moe_kernels/fused_moe_w8a8_smem.cu",
+                                        # "./moe_kernels/fused_moe_w8a8_regtiling.cu",
                                         "./moe_kernels/fused_moe_w8a8_fp16tc.cu",
                                         "./moe_kernels/fused_moe_w8a8_fp16tc_prefetch.cu"], extra_cuda_cflags=["-lineinfo"])
 
@@ -74,8 +75,9 @@ def run_moe(topk_ids, eps=1e-10):
     moe_sum_reduce_torch_compile(out_triton_down.view(*out_triton_down.shape), out_triton, moe_config.routed_scaling_factor)
 
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
+    # print(sorted_token_ids[:num_tokens_post_padded[0]])
+    # print(expert_ids)
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, KERNEL_VARIANT)
-    # out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, 0)
 
     # idx = torch.isclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol).logical_not()
     # if not torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol):
@@ -123,7 +125,6 @@ def run_moe(topk_ids, eps=1e-10):
     out_custom_swiglu = out_triton_swiglu.clone()
     x_q, x_scale = sglang_per_token_group_quant_fp8(out_custom_swiglu, block_shape[1])
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w2, w2_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, 1, KERNEL_VARIANT)
-    # out = my_ext.fused_moe_w8a8(x_q, x_scale, w2, w2_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, 1, 0)
     out *= topk_weights.view((num_tokens*top_k, 1))
 
     # idx = torch.isclose(out, out_triton_down.reshape(out.shape), atol=atol, rtol=rtol).logical_not()
@@ -195,7 +196,7 @@ def bench(numerics: bool = False):
 profiling = "--profile" in sys.argv
 numerics = "--numerics" in sys.argv
 #TODO proper argument parsing
-for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "--profile" else [int(sys.argv[1])]:
+for num_tokens in [8, 32, 128, 256] if len(sys.argv) == 1 or sys.argv[1] == "--profile" else [int(sys.argv[1])]:
     print("Batch size", num_tokens)
     topk_weights = torch.nn.functional.softmax(torch.randn((num_tokens, top_k), dtype=torch.bfloat16), dim=-1)
 
@@ -213,7 +214,9 @@ for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "
 
 # Uniform
     print("benchmarking uniform")
-    topk_ids = (torch.arange(top_k*num_tokens)%n_experts).reshape(num_tokens, top_k).to(torch.int32)
+    topk_ids = (torch.arange((top_k-1)*num_tokens)%n_experts).reshape(num_tokens, top_k-1).to(torch.int32)
+    # add shared expert to every token
+    topk_ids = torch.hstack((topk_ids, torch.ones(num_tokens).view(num_tokens,1).to(torch.int32)*(n_experts-1)))
     if profiling:
         bench(numerics)
     else:
