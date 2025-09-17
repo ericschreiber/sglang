@@ -1,3 +1,4 @@
+
 #include <cuda.h>
 #include <cuda_fp8.h>
 #include <stdio.h>
@@ -6,7 +7,7 @@
 using fp8 = __nv_fp8_e4m3;
 
 template <int BM, int BK, int BN>
-__global__ void fused_moe_w8a8_kernel(
+__global__ void fused_moe_w8a8_regtiling_kernel(
         const fp8* __restrict__ x,
         const float* __restrict__ x_scale,
         const fp8* __restrict__ w,
@@ -148,16 +149,10 @@ __global__ void fused_moe_w8a8_kernel(
             //             scale_w
             //             );
         }
-        if (token_src[0] < M)
-        {
-            f_acc[0] += scale_x[0] * scale_w * acc[0];
-            f_acc[1] += scale_x[0] * scale_w * acc[1];
-        }
-        if (token_src[1] < M)
-        {
-            f_acc[2] += scale_x[1] * scale_w * acc[2];
-            f_acc[3] += scale_x[1] * scale_w * acc[3];
-        }
+        f_acc[0] += scale_x[0] * scale_w * acc[0];
+        f_acc[1] += scale_x[0] * scale_w * acc[1];
+        f_acc[2] += scale_x[1] * scale_w * acc[2];
+        f_acc[3] += scale_x[1] * scale_w * acc[3];
     }
     if (token_src[0] < M)
     {
@@ -182,7 +177,7 @@ __global__ void fused_moe_w8a8_kernel(
     //             f_acc[3]);
 }
 
-void fused_moe_w8a8(
+void fused_moe_w8a8_regtiling(
         const fp8* x,
         const float* x_scale,
         const fp8* w, const float* w_scale,
@@ -204,7 +199,7 @@ void fused_moe_w8a8(
     constexpr int num_warps_y = 2;
     dim3 dimBlock(32*num_warps_x, num_warps_y, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*num_warps_x)), std::ceil((float)sorted_num/(BM*num_warps_y)), 1);
-    fused_moe_w8a8_kernel<BM, BK, BN><<<dimGrid, dimBlock>>>(
+    fused_moe_w8a8_regtiling_kernel<BM, BK, BN><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
             w,
