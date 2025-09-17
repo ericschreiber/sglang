@@ -21,7 +21,7 @@ my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "fused_moe_w8a8.cu",
                                         "./moe_kernels/fused_moe_w8a8_regtiling.cu",
                                         "./moe_kernels/fused_moe_w8a8_prefetching.cu",
-                                        "fused_moe_w8a8_fp16.cu"], extra_cuda_cflags=["-lineinfo"])
+                                        "./moe_kernels/fused_moe_w8a8_fp16.cu"], extra_cuda_cflags=["-lineinfo"])
 
 def get_stats(activated_experts):
     flops_1 = 2*num_tokens*w1.shape[1]*w1.shape[2]
@@ -75,6 +75,7 @@ def run_moe(topk_ids, eps=1e-10):
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, KERNEL_VARIANT)
     # out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, 0)
+    # out = my_ext.fused_moe_w8a8_fp16tc(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k)
 
     # idx = torch.isclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol).logical_not()
     # if not torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol):
