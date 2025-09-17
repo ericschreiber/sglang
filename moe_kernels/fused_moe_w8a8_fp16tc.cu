@@ -22,27 +22,30 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
         int N
         )
 {
+    const int32_t warpN = (blockIdx.x*blockDim.x+threadIdx.x)/32;
+    const int32_t warpM = blockIdx.y*blockDim.y+threadIdx.y;
+
     //TODO should not be hardcoded
     constexpr int block_shape[2] = {128, 128};
 
-    const int exp_idx = expert_ids[blockIdx.y];
+    const int exp_idx = expert_ids[warpM];
     const fp8* exp_w = w + exp_idx * K * N;
     const int lane_id = threadIdx.x%32;
-    const int w_row = blockIdx.x * BN + (lane_id>>2);
+    const int w_row = warpN * BN + (lane_id>>2);
 
-    if(blockIdx.y * BM >= num_tokens_post_padded[0])
+    if(warpM * BM >= num_tokens_post_padded[0])
         return;
 
     int token_dest[2];
-    token_dest[0] = sorted_token_ids[blockIdx.y*BM + (lane_id>>2)];
-    token_dest[1] = sorted_token_ids[blockIdx.y*BM + (lane_id>>2) + 8];
+    token_dest[0] = sorted_token_ids[warpM*BM + (lane_id>>2)];
+    token_dest[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8];
     int token_src[2];
-    token_src[0] = sorted_token_ids[blockIdx.y*BM + (lane_id>>2)] / top_k;
-    token_src[1] = sorted_token_ids[blockIdx.y*BM + (lane_id>>2) + 8] / top_k;
+    token_src[0] = sorted_token_ids[warpM*BM + (lane_id>>2)] / top_k;
+    token_src[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8] / top_k;
 
     uint32_t tile_w[2];
     float f_acc[4] = {0.f};
-    bool p = blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0;
+    // bool p = blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0;
 
     for (int block=0; block < K/block_shape[0]; block += 1)
     {
@@ -115,11 +118,11 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
     }
     if (token_src[0] < M)
     {
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + blockIdx.x * BN + (lane_id%4)*2) = __nv_bfloat162(f_acc[0], f_acc[1]);;
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warpN * BN + (lane_id%4)*2) = __nv_bfloat162(f_acc[0], f_acc[1]);;
     }
     if (token_src[1] < M)
     {
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + blockIdx.x * BN + (lane_id%4)*2) = __nv_bfloat162(f_acc[2], f_acc[3]);;
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + warpN * BN + (lane_id%4)*2) = __nv_bfloat162(f_acc[2], f_acc[3]);;
     }
 }
 
@@ -141,8 +144,10 @@ void fused_moe_w8a8_fp16tc(
     constexpr int BM = 16;
     constexpr int BK = 16;
     constexpr int BN = 8;
-    dim3 dimBlock(32,1,1);
-    dim3 dimGrid(std::ceil((float)N/BN), std::ceil((float)sorted_num/BM), 1);
+    constexpr int num_warps_x = 4;
+    constexpr int num_warps_y = 2;
+    dim3 dimBlock(32*num_warps_x, num_warps_y, 1);
+    dim3 dimGrid(std::ceil((float)N/(BN*num_warps_x)), std::ceil((float)sorted_num/(BM*num_warps_y)), 1);
     fused_moe_w8a8_fp16tc_kernel<BM, BK, BN><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
