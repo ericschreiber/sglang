@@ -87,27 +87,22 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
 
             uint32_t* tile_x = reinterpret_cast<uint32_t*>(&load_xfp16);
             
+            // Load w
+            const int w_col = (lane_id%4)*2 + k + b_off;
+            // Load first contiguous pair (fp8 → fp16 → pack into uint32_t)
+            fp8 fp8_pair1[2];
+            *reinterpret_cast<uint16_t*>(fp8_pair1) = *reinterpret_cast<const uint16_t*>(&exp_w[w_row*K + w_col]);
 
-            fp8 tmp[2];
-            for (int i = 0; i<2; i++)
-            {
-                const int w_col = (lane_id%4)*2 + i + k + b_off;
-                tmp[i] = exp_w[w_row*K + w_col];
-            }
-            __half tmpfp16[2];
-            tmpfp16[0] = __half(tmp[0]);
-            tmpfp16[1] = __half(tmp[1]);
-            tile_w[0] = *reinterpret_cast<uint32_t*>(&tmpfp16);
-            fp8 tmp2[2];
-            for (int i = 0; i<2; i++)
-            {
-                const int w_col = (lane_id%4)*2 + i + k + b_off + 8;
-                tmp2[i] = exp_w[w_row*K + w_col];
-            }
-            __half tmpfp16_2[2];
-            tmpfp16_2[0] = __half(tmp2[0]);
-            tmpfp16_2[1] = __half(tmp2[1]);
-            tile_w[1] = *reinterpret_cast<uint32_t*>(&tmpfp16_2);
+            half2 h2_pair1 = make_half2(__half(fp8_pair1[0]), __half(fp8_pair1[1]));
+            tile_w[0] = *reinterpret_cast<uint32_t*>(&h2_pair1);
+            
+            // Load second contiguous pair (fp8 → fp16 → pack into uint32_t)
+            fp8 fp8_pair2[2];
+            *reinterpret_cast<uint16_t*>(fp8_pair2) = *reinterpret_cast<const uint16_t*>(&exp_w[w_row*K + w_col + 8]);
+            
+            half2 h2_pair2 = make_half2(__half(fp8_pair2[0]), __half(fp8_pair2[1]));
+            tile_w[1] = *reinterpret_cast<uint32_t*>(&h2_pair2);
+
             asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                     : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
                     : "r"(tile_x[0]), "r"(tile_x[1]), "r"(tile_x[2]), "r"(tile_x[3]), "r"(tile_w[0]), "r"(tile_w[1]));
