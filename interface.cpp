@@ -37,25 +37,10 @@
 void fused_moe_w8a8(MOE_ARGS);
 void fused_moe_w8a8_regtiling(MOE_ARGS);
 void fused_moe_w8a8_prefetching(MOE_ARGS);
+void fused_moe_w8a8_smem(MOE_ARGS);
+
 void fused_moe_w8a8_fp16tc(MOE_ARGS);
 void fused_moe_w8a8_fp16tc_prefetch(MOE_ARGS);
-
-void fused_moe_w8a8_fp16tc(
-        const __nv_fp8_e4m3* x,
-        const float* x_scale,
-        const __nv_fp8_e4m3* w,
-        const float* w_scale,
-        __nv_bfloat16* out,
-        const int* sorted_token_ids,
-        const int* expert_ids,
-        const int* num_tokens_post_padded,
-        const int top_k,
-        int M,
-        int K,
-        int N,
-        int sorted_num
-        );
-void fused_moe_w8a8_smem(MOE_ARGS);
 
 torch::Tensor fused_moe_launcher(
         torch::Tensor& x,
@@ -81,12 +66,6 @@ torch::Tensor fused_moe_launcher(
             break;
         case 2:
             fused_moe_w8a8_smem(MOE_CALL);
-            break;
-        case 16:
-            fused_moe_w8a8_fp16tc(MOE_CALL);
-            break;
-        case 161:
-            fused_moe_w8a8_fp16tc_prefetch(MOE_CALL);
             break;
         case 16:
             fused_moe_w8a8_fp16tc(MOE_CALL);

@@ -1,3 +1,5 @@
+
+
 #include <cuda.h>
 #include <cuda_fp8.h>
 #include <stdio.h>
@@ -102,17 +104,15 @@ __global__ void fused_moe_w8a8_prefetching_kernel(
     for (int block=0; block < K/block_shape[0]; block += 1)
     {
         int b_off = block * block_shape[0];
-        for (int s = 0; s < S::size; s++)
+        float acc[4] = {0.f};
+        for(int k = 0; k < block_shape[0]; k += BK)
         {
-            float acc[4] = {0.f};
-            for(int k = 0; k < block_shape[0]; k += BK)
-            {
-                asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
-                        : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                        : "r"(tile_x[compute_stage][0]), "r"(tile_x[compute_stage][1]), "r"(tile_x[compute_stage][2]), "r"(tile_x[compute_stage][3]), "r"(tile_w[compute_stage][0]), "r"(tile_w[compute_stage][1]));
-                if(b_off + k + compute_stage*BK < K)
-                    load_tiles(b_off + k + PF*BK, compute_stage);
-                compute_stage = (compute_stage+1)%PF;
+            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
+                    : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
+                    : "r"(tile_x[tc_stage][0]), "r"(tile_x[tc_stage][1]), "r"(tile_x[tc_stage][2]), "r"(tile_x[tc_stage][3]), "r"(tile_w[tc_stage][0]), "r"(tile_w[tc_stage][1]));
+            if(b_off + k + tc_stage*BK < K)
+                load_tiles(b_off + k + PF*BK, tc_stage);
+            tc_stage = (tc_stage+1)%PF;
 
         }
         if (token_src[0] < M)

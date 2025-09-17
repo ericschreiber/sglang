@@ -47,7 +47,7 @@ def get_times(kernel_name, prof):
             ret.append(e.device_time_total)
     return ret
 
-KERNEL_VARIANT=161
+KERNEL_VARIANT=2
 
 def run_moe(topk_ids, eps=1e-10):
     x = torch.empty((num_tokens, hidden_size), dtype=torch.bfloat16).normal_(mean=0, std=0.05)
