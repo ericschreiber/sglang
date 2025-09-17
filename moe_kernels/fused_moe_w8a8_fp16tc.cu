@@ -83,13 +83,6 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
             for (int i = 0; i<8; i++)
             {
                 load_xfp16[i] = __half(reinterpret_cast<const fp8*>(&load_x)[i]);
-                // multiply by scale_x
-                // 0,1 -> 0
-                // 2,3 -> 1
-                // 4,5 -> 0
-                // 6,7 -> 1
-                // i/2 % 2 gives this function
-                load_xfp16[i] *= __half(scale_x[(i / 2) % 2]);
             }
 
             uint32_t* tile_x = reinterpret_cast<uint32_t*>(&load_xfp16);
@@ -102,8 +95,8 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
                 tmp[i] = exp_w[w_row*K + w_col];
             }
             __half tmpfp16[2];
-            tmpfp16[0] = __half(tmp[0]) * __half(scale_w);
-            tmpfp16[1] = __half(tmp[1]) * __half(scale_w);
+            tmpfp16[0] = __half(tmp[0]);
+            tmpfp16[1] = __half(tmp[1]);
             tile_w[0] = *reinterpret_cast<uint32_t*>(&tmpfp16);
             fp8 tmp2[2];
             for (int i = 0; i<2; i++)
@@ -112,17 +105,18 @@ __global__ void fused_moe_w8a8_fp16tc_kernel(
                 tmp2[i] = exp_w[w_row*K + w_col];
             }
             __half tmpfp16_2[2];
-            tmpfp16_2[0] = __half(tmp2[0]) * __half(scale_w);
-            tmpfp16_2[1] = __half(tmp2[1]) * __half(scale_w);
+            tmpfp16_2[0] = __half(tmp2[0]);
+            tmpfp16_2[1] = __half(tmp2[1]);
             tile_w[1] = *reinterpret_cast<uint32_t*>(&tmpfp16_2);
             asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                     : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
                     : "r"(tile_x[0]), "r"(tile_x[1]), "r"(tile_x[2]), "r"(tile_x[3]), "r"(tile_w[0]), "r"(tile_w[1]));
         }
-        f_acc[0] += acc[0];
-        f_acc[1] += acc[1];
-        f_acc[2] += acc[2];
-        f_acc[3] += acc[3];
+        f_acc[0] += scale_x[0] * scale_w * acc[0];
+        f_acc[1] += scale_x[0] * scale_w * acc[1];
+        f_acc[2] += scale_x[1] * scale_w * acc[2];
+        f_acc[3] += scale_x[1] * scale_w * acc[3];
+            
     }
     if (token_src[0] < M)
     {

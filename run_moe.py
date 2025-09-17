@@ -45,7 +45,7 @@ def get_times(kernel_name, prof):
             ret.append(e.device_time_total)
     return ret
 
-KERNEL_VARIANT=16
+KERNEL_VARIANT=1
 
 def run_moe(topk_ids, eps=1e-10):
     x = torch.empty((num_tokens, hidden_size), dtype=torch.bfloat16).normal_(mean=0, std=0.05)
@@ -167,7 +167,7 @@ w1_scale = torch.randn((n_experts, w1.shape[1]//block_shape[0], w1.shape[2]//blo
 w1_dq = w1.to(torch.bfloat16) * w1_scale.repeat_interleave(block_shape[0], 2).repeat_interleave(block_shape[0], 1)
 moe_config.inplace=False
 
-def bench():
+def bench(numerics: bool = False):
     with profile(activities=[ProfilerActivity.CUDA], record_shapes=True) as prof:
         diffs = run_moe(topk_ids)
     t_times = get_times("fused_moe_kernel", prof)
@@ -180,15 +180,17 @@ def bench():
     print(f"Triton moe down {(f2/1e6)/(t_times[1]):.2f} TFLOPs, {(m2/1e3)/t_times[1]:.2f} GB/s")
     print(f"AA moe down {(f2/1e6)/(cu_times[1]):.2f} TFLOPs, {(m2/1e3)/cu_times[1]:.2f} GB/s, speed relative to triton {t_times[1]*100/cu_times[1]:.2f}%")
 
-    print(f"""Up projection mean abs difference {diffs[0]:.2f},
-Up projection max abs difference {diffs[1]:.2f},
-swiglu mean abs difference {diffs[2]:.2f},
-swiglu max abs difference {diffs[3]:.2f},
-down projection mean abs difference {diffs[4]:.2f},
-down projection max abs difference {diffs[5]:.2f},""")
+    if numerics:
+        print(f"""Up projection mean abs difference {diffs[0]:.5f},
+    Up projection max abs difference {diffs[1]:.5f},
+    swiglu mean abs difference {diffs[2]:.5f},
+    swiglu max abs difference {diffs[3]:.5f},
+    down projection mean abs difference {diffs[4]:.5f},
+    down projection max abs difference {diffs[5]:.5f},""")
     print("")
 
 profiling = "--profile" in sys.argv
+numerics = "--numerics" in sys.argv
 #TODO proper argument parsing
 for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "--profile" else [int(sys.argv[1])]:
     print("Batch size", num_tokens)
@@ -201,7 +203,7 @@ for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "
     # print("benchmarking ideal")
     # topk_ids = torch.arange(top_k).repeat(num_tokens,1).to(torch.int32)
     # if profiling:
-    #     bench()
+    #     bench(numerics)
     # else:
     #     run_moe(topk_ids)
 
@@ -210,7 +212,7 @@ for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "
     print("benchmarking uniform")
     topk_ids = (torch.arange(top_k*num_tokens)%n_experts).reshape(num_tokens, top_k).to(torch.int32)
     if profiling:
-        bench()
+        bench(numerics)
     else:
         run_moe(topk_ids)
 
@@ -219,6 +221,6 @@ for num_tokens in [8, 256, 1024, 8192] if len(sys.argv) == 1 or sys.argv[1] == "
 # # Random (disabled for now bc its same as uniform)
 #     print("benchmarking random")
 #     topk_ids = torch.randint(low=0, size=(num_tokens, top_k), high=n_experts).to(torch.int32)
-#     bench()
+#     bench(numerics)
 #
 #
