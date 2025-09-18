@@ -100,19 +100,33 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
             tile_x[1][1][3] = loaded.w;
         }
 
+        // uint2 loaded2;
         const int w_col = (lane_id%4)*4 + b_off;
         // tile_w[0] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
-        loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
-        tile_w[0][0] = loaded.x;
-        tile_w[0][1] = loaded.y;
-        tile_w[0][2] = loaded.z;
-        tile_w[0][3] = loaded.w;
-        // tile_w[1] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 16);
-        loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 16);
-        tile_w[1][0] = loaded.x;
-        tile_w[1][1] = loaded.y;
-        tile_w[1][2] = loaded.z;
-        tile_w[1][3] = loaded.w;
+        // loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
+        // loaded2 = *reinterpret_cast<const uint2*>(exp_w + w_row*K + w_col);
+        // tile_w[0][0] = loaded2.x;
+        // tile_w[0][1] = loaded2.y;
+        // loaded2 = *reinterpret_cast<const uint2*>(exp_w + w_row*K + w_col + 8);
+        // tile_w[0][2] = loaded2.x;
+        // tile_w[0][3] = loaded2.y;
+        // // // tile_w[1] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 16);
+        // // loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 16);
+        // loaded2 = *reinterpret_cast<const uint2*>(exp_w + w_row*K + w_col + 16);
+        // // tile_w[1][0] = loaded.x;
+        // tile_w[1][1] = loaded2.y;
+        // loaded2 = *reinterpret_cast<const uint2*>(exp_w + w_row*K + w_col + 24);
+        // tile_w[1][2] = loaded2.x;
+        // tile_w[1][3] = loaded2.y;
+
+        tile_w[0][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col);
+        tile_w[0][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 8);
+        tile_w[0][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 16);
+        tile_w[0][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 24);
+        tile_w[1][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 32);
+        tile_w[1][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 40);
+        tile_w[1][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 48);
+        tile_w[1][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 56);
         
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
