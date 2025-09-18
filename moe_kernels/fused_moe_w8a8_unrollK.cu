@@ -45,7 +45,7 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
     uint32_t tile_x[2][2][4];
     uint32_t tile_w[2][4];
     float f_acc[4] = {0.f};
-    // bool p = blockIdx.x == 1 && blockIdx.y == 5 && threadIdx.x == 0;
+    bool p = blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0;
 
     for (int block=0; block < K/block_shape[0]; block += 1)
     {
@@ -71,14 +71,12 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
         uint4 loaded;
         if (token_src[0] < M)
         {
-            // tile_x[0][0] = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off)[lane_id%4];
             loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off)[lane_id%4];
             tile_x[0][0][0] = loaded.x;
             tile_x[0][0][1] = loaded.y; 
             tile_x[0][0][2] = loaded.z;
             tile_x[0][0][3] = loaded.w;
-            // tile_x[0][1] = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off + 16)[lane_id%4];
-            loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off + 16)[lane_id%4];
+            loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off + 32)[lane_id%4];
             tile_x[0][1][0] = loaded.x;
             tile_x[0][1][1] = loaded.y;
             tile_x[0][1][2] = loaded.z;
@@ -86,22 +84,28 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
         }
         if (token_src[1] < M)
         {
-            // tile_x[1][0] = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off)[lane_id%4];
             loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off)[lane_id%4];
             tile_x[1][0][0] = loaded.x;
             tile_x[1][0][1] = loaded.y;
             tile_x[1][0][2] = loaded.z;
             tile_x[1][0][3] = loaded.w;
-            // tile_x[1][1] = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off + 16)[lane_id%4];
-            loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off + 16)[lane_id%4];
+            loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off + 32)[lane_id%4];
             tile_x[1][1][0] = loaded.x;
             tile_x[1][1][1] = loaded.y;
             tile_x[1][1][2] = loaded.z;
             tile_x[1][1][3] = loaded.w;
         }
+        // show tile_x
+        if ((block== 0) && blockIdx.x == 0 && blockIdx.y == 0 && (threadIdx.x == 0 || threadIdx.x == 1 || threadIdx.x == 2 || threadIdx.x == 3) && warpM == 0)
+        {
+            printf("Thread %d, block %d, tile_x[0][0][0] = %x, tile_x[0][0][1] = %x, tile_x[0][0][2] = %x, tile_x[0][0][3] = %x\n", threadIdx.x, block, tile_x[0][0][0], tile_x[0][0][1], tile_x[0][0][2], tile_x[0][0][3]);
+            printf("Thread %d, block %d, tile_x[0][1][0] = %x, tile_x[0][1][1] = %x, tile_x[0][1][2] = %x, tile_x[0][1][3] = %x\n", threadIdx.x, block, tile_x[0][1][0], tile_x[0][1][1], tile_x[0][1][2], tile_x[0][1][3]);
+            // printf("Thread %d, tile_x[1][0][0] = %d, tile_x[1][0][1] = %d, tile_x[1][0][2] = %d, tile_x[1][0][3] = %d\n", threadIdx.x, tile_x[1][0][0], tile_x[1][0][1], tile_x[1][0][2], tile_x[1][0][3]);
+            // printf("Thread %d, tile_x[1][1][0] = %d, tile_x[1][1][1] = %d, tile_x[1][1][2] = %d, tile_x[1][1][3] = %d\n", threadIdx.x, tile_x[1][1][0], tile_x[1][1][1], tile_x[1][1][2], tile_x[1][1][3]);
+        }
 
         // uint2 loaded2;
-        const int w_col = (lane_id%4)*4 + b_off;
+        const int w_col = (lane_id%4)*32 + b_off;
         // tile_w[0] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
         // loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
         // loaded2 = *reinterpret_cast<const uint2*>(exp_w + w_row*K + w_col);
@@ -120,14 +124,16 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
         // tile_w[1][3] = loaded2.y;
 
         tile_w[0][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col);
-        tile_w[0][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 8);
-        tile_w[0][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 16);
-        tile_w[0][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 24);
-        tile_w[1][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 32);
-        tile_w[1][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 40);
-        tile_w[1][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 48);
-        tile_w[1][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 56);
-        
+        tile_w[0][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 4);
+        tile_w[0][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 8);
+        tile_w[0][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 12);
+
+        tile_w[1][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 16);
+        tile_w[1][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 20);
+        tile_w[1][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 24);
+        tile_w[1][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 28);
+
+
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
                 : "r"(tile_x[0][0][0]), "r"(tile_x[0][1][0]), "r"(tile_x[1][0][0]), "r"(tile_x[1][1][0]), "r"(tile_w[0][0]), "r"(tile_w[1][0]));
