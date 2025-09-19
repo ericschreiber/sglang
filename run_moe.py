@@ -103,6 +103,10 @@ def run_moe(topk_ids, eps=1e-10):
     # print(x_scale)
     # print(w1.shape)
 
+    # # Print out and out_triton_up
+    # print(out[0:10])
+    # print(out_triton_up.reshape(out.shape)[0:10])
+
     assert(torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol))
     diff = torch.abs(out-out_triton_up.reshape(out.shape))
     mean_diff_up = diff.mean()

@@ -95,14 +95,6 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
             tile_x[1][1][2] = loaded.z;
             tile_x[1][1][3] = loaded.w;
         }
-        // // show tile_x
-        // if ((block== 0) && blockIdx.x == 0 && blockIdx.y == 0 && (threadIdx.x == 0 || threadIdx.x == 1 || threadIdx.x == 2 || threadIdx.x == 3) && warpM == 0)
-        // {
-        //     printf("Thread %d, block %d, lane_id %d, lane_mod_4 %d, tile_x[0][0][0] = %x, tile_x[0][0][1] = %x, tile_x[0][0][2] = %x, tile_x[0][0][3] = %x\n", threadIdx.x, block, lane_id, lane_id%4, tile_x[0][0][0], tile_x[0][0][1], tile_x[0][0][2], tile_x[0][0][3]);
-        //     printf("Thread %d, block %d, lane_id %d, lane_mod_4 %d, tile_x[0][1][0] = %x, tile_x[0][1][1] = %x, tile_x[0][1][2] = %x, tile_x[0][1][3] = %x\n", threadIdx.x, block, lane_id, lane_id%4, tile_x[0][1][0], tile_x[0][1][1], tile_x[0][1][2], tile_x[0][1][3]);
-        //     // printf("Thread %d, tile_x[1][0][0] = %d, tile_x[1][0][1] = %d, tile_x[1][0][2] = %d, tile_x[1][0][3] = %d\n", threadIdx.x, tile_x[1][0][0], tile_x[1][0][1], tile_x[1][0][2], tile_x[1][0][3]);
-        //     // printf("Thread %d, tile_x[1][1][0] = %d, tile_x[1][1][1] = %d, tile_x[1][1][2] = %d, tile_x[1][1][3] = %d\n", threadIdx.x, tile_x[1][1][0], tile_x[1][1][1], tile_x[1][1][2], tile_x[1][1][3]);
-        // }
 
         const int w_col = (lane_id%4)*16 + b_off;
         // tile_w[0] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
@@ -131,19 +123,19 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
 
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                : "r"(tile_x[0][0][0]), "r"(tile_x[0][1][0]), "r"(tile_x[1][0][0]), "r"(tile_x[1][1][0]), "r"(tile_w[0][0]), "r"(tile_w[1][0]));
+                : "r"(tile_x[0][0][0]), "r"(tile_x[1][0][0]), "r"(tile_x[0][1][0]), "r"(tile_x[1][1][0]), "r"(tile_w[0][0]), "r"(tile_w[1][0]));
 
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                : "r"(tile_x[0][0][1]), "r"(tile_x[0][1][1]), "r"(tile_x[1][0][1]), "r"(tile_x[1][1][1]), "r"(tile_w[0][1]), "r"(tile_w[1][1]));
+                : "r"(tile_x[0][0][1]), "r"(tile_x[1][0][1]), "r"(tile_x[0][1][1]), "r"(tile_x[1][1][1]), "r"(tile_w[0][1]), "r"(tile_w[1][1]));
 
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                : "r"(tile_x[0][0][2]), "r"(tile_x[0][1][2]), "r"(tile_x[1][0][2]), "r"(tile_x[1][1][2]), "r"(tile_w[0][2]), "r"(tile_w[1][2]));
+                : "r"(tile_x[0][0][2]), "r"(tile_x[1][0][2]), "r"(tile_x[0][1][2]), "r"(tile_x[1][1][2]), "r"(tile_w[0][2]), "r"(tile_w[1][2]));
 
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                 : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                : "r"(tile_x[0][0][3]), "r"(tile_x[0][1][3]), "r"(tile_x[1][0][3]), "r"(tile_x[1][1][3]), "r"(tile_w[0][3]), "r"(tile_w[1][3]));
+                : "r"(tile_x[0][0][3]), "r"(tile_x[1][0][3]), "r"(tile_x[0][1][3]), "r"(tile_x[1][1][3]), "r"(tile_w[0][3]), "r"(tile_w[1][3]));
         
         if (token_src[0] < M)
         {
