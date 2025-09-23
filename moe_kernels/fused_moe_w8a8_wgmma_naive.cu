@@ -7,19 +7,26 @@
 // Not gonna type all that
 using fp8 = __nv_fp8_e4m3;
 
-template <int BlockMajorSize, int BlockMinorSize>
-CUtensorMap create_2d_fp8_tensor_map(fp8* gmem_ptr, int gmem_width, int gmem_height) {
+template <int BlockMajorSize, int BlockMinorSize, int BlockDepthSize>
+CUtensorMap create_3d_tensor_map(fp8* gmem_ptr, int gmem_height, int gmem_width, int gmem_depth) {
     CUtensorMap tma_map_host;
     void* gmem_address = (void*)gmem_ptr;
-    uint64_t gmem_prob_shape[2] = {(uint64_t)gmem_width, (uint64_t)gmem_height};
-    uint64_t gmem_prob_stride[1] = {sizeof(fp8) * gmem_width};
-    uint32_t smem_box_shape[2] = {uint32_t(BlockMinorSize), uint32_t(BlockMajorSize)};
-    uint32_t smem_box_stride[2] = {1, 1};
+    uint64_t gmem_prob_shape[3] = {(uint64_t)gmem_depth, (uint64_t)gmem_width, (uint64_t)gmem_height};
+    // globalStrides[0] = globalDim[0] * elementSizeInBytes(tensorDataType) + padding[0];
+      //     for (i = 1; i < tensorRank - 1; i++)
+      //         globalStrides[i] = globalStrides[i – 1] * (globalDim[i] + padding[i]);
+      //         assert(globalStrides[i] >= globalDim[i]);
+    uint64_t gmem_prob_stride[2] = {
+      (uint64_t) gmem_depth,                        
+      (uint64_t) gmem_width * gmem_depth           
+  };
+    uint32_t smem_box_shape[3] = {uint32_t(BlockDepthSize), uint32_t(BlockMinorSize), uint32_t(BlockMajorSize)};
+    uint32_t smem_box_stride[3] = {1, 1, 1};
 
     CUresult result = cuTensorMapEncodeTiled(
         &tma_map_host, 
         CU_TENSOR_MAP_DATA_TYPE_UINT8, 
-        2,                                  // cuuint32_t tensorRank
+        3,                                  // cuuint32_t tensorRank
         gmem_address,                       // void *globalAddress, 
         gmem_prob_shape,                    // const cuuint64_t *globalDim,
         gmem_prob_stride,                   // const cuuint64_t *globalStrides,
@@ -36,7 +43,7 @@ CUtensorMap create_2d_fp8_tensor_map(fp8* gmem_ptr, int gmem_width, int gmem_hei
 }
 
 template <int BM, int BK, int BN, int WGMMA_BK>
-__global__ void fused_moe_w8a8_unroll_block_kernel(
+__global__ void fused_moe_w8a8_wgmma_naive_kernel(
         const fp8* __restrict__ x,
         // const __grid_constant__ CUtensorMap tensor_map_x,
         const float* __restrict__ x_scale,
@@ -216,7 +223,7 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
     }
 }
 
-void fused_moe_w8a8_unrollK(
+void fused_moe_w8a8_wgmma_naive(
         const fp8* x,
         const float* x_scale,
         const fp8* w, const float* w_scale,
@@ -228,6 +235,7 @@ void fused_moe_w8a8_unrollK(
         int M,
         int K,
         int N,
+        int num_experts,
         int sorted_num
         )
 {
@@ -241,12 +249,12 @@ void fused_moe_w8a8_unrollK(
     dim3 dimBlock(32*num_warps_x, num_warps_y, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*num_warps_x)), std::ceil((float)sorted_num/(BM*num_warps_y)), 1);
 
-    
+    auto tensor_map_w = create_3d_tensor_map<1, BN, BK>(w, num_experts, N, K);
 
     fused_moe_w8a8_unroll_block_kernel<BM, BK, BN, WGMMA_BK><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
-            w,
+            tensor_map_w,
             w_scale,
             out,
             sorted_token_ids,
