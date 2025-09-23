@@ -309,6 +309,154 @@ void add_one_matrix_tile(int M, int K, int row_offset, int col_offset) {
   print_matrix(&h_matrix[0][0], M, K);
 }
 
+
+template <int BlockMajorSize, int BlockMinorSize, int BlockDepthSize>
+CUtensorMap create_3d_tensor_map(fp8* gmem_ptr, int gmem_height, int gmem_width, int gmem_depth) {
+    CUtensorMap tma_map_host;
+    void* gmem_address = (void*)gmem_ptr;
+    uint64_t gmem_prob_shape[3] = {(uint64_t)gmem_depth, (uint64_t)gmem_width, (uint64_t)gmem_height};
+    uint64_t gmem_prob_stride[2] = {
+      // globalStrides[0] = globalDim[0] * elementSizeInBytes(tensorDataType) + padding[0];
+      //     for (i = 1; i < tensorRank - 1; i++)
+      //         globalStrides[i] = globalStrides[i – 1] * (globalDim[i] + padding[i]);
+      //         assert(globalStrides[i] >= globalDim[i]);
+      (uint64_t) gmem_depth,                        
+      (uint64_t) gmem_width * gmem_depth           
+  };
+    uint32_t smem_box_shape[3] = {uint32_t(BlockDepthSize), uint32_t(BlockMinorSize), uint32_t(BlockMajorSize)};
+    uint32_t smem_box_stride[3] = {1, 1, 1};
+
+    CUresult result = cuTensorMapEncodeTiled(
+        &tma_map_host, 
+        CU_TENSOR_MAP_DATA_TYPE_UINT8, 
+        3,                                  // cuuint32_t tensorRank
+        gmem_address,                       // void *globalAddress, 
+        gmem_prob_shape,                    // const cuuint64_t *globalDim,
+        gmem_prob_stride,                   // const cuuint64_t *globalStrides,
+        smem_box_shape,                     // const cuuint32_t *boxDim,
+        smem_box_stride,                    // const cuuint32_t *elementStrides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        CU_TENSOR_MAP_SWIZZLE_NONE, 
+        CU_TENSOR_MAP_L2_PROMOTION_NONE, 
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+    );
+
+    assert(result == CUDA_SUCCESS);
+    return tma_map_host;
+}
+
+template <int TileSizeH, int TileSizeW, int TileSizeL>
+__global__ void add_one_3d_tensor_tile_kernel(int M, int K, int L, const __grid_constant__ CUtensorMap tensor_map, int row_offset, int col_offset, int depth_offset) {
+    if (threadIdx.x == 0) { 
+        printf("kernel started with M = %d, K = %d, L = %d, row_offset = %d, col_offset = %d, depth_offset = %d, TileSizeH = %d, TileSizeW = %d\n", M, K, L, row_offset, col_offset, depth_offset, TileSizeH, TileSizeW);
+    }
+
+    __shared__ __align__(128) fp8 smatrix[TileSizeH][TileSizeW][TileSizeL];
+    #pragma nv_diag_suppress static_var_with_dynamic_init
+    __shared__ barrier bar;
+
+    if (threadIdx.x == 0) {
+        init(&bar, blockDim.x);
+        cde::fence_proxy_async_shared_cta();
+    }
+    __syncthreads();
+    
+    barrier::arrival_token token;
+
+    if (threadIdx.x == 0) {
+        cde::cp_async_bulk_tensor_3d_global_to_shared(&smatrix[0], &tensor_map, depth_offset, col_offset, row_offset, bar);
+        token = cuda::device::barrier_arrive_tx(bar, 1, sizeof(smatrix));
+    } else {
+        token = bar.arrive();
+    }
+    bar.wait(std::move(token));
+    __syncthreads();
+
+
+    // Symbolically modify a value in shared memory.
+    for (int i = 0; i < TileSizeH; i++) {
+        for (int j = 0; j < TileSizeW; j += blockDim.x) {
+          for (int k = 0; k < TileSizeL; k++) {
+        smatrix[i][j + threadIdx.x][k] = fp8(8) ;
+          }
+        }
+    }
+
+    // Wait for shared memory writes to be visible to TMA engine.
+    cde::fence_proxy_async_shared_cta();
+    __syncthreads();
+    // After syncthreads, writes by all threads are visible to TMA engine.
+
+    // Initiate TMA transfer to copy shared memory to global memory
+    if (threadIdx.x == 0) {
+        cde::cp_async_bulk_tensor_3d_shared_to_global(&tensor_map, depth_offset, col_offset, row_offset, &smatrix);
+        // Wait for TMA transfer to have finished reading shared memory.
+        // Create a "bulk async-group" out of the previous bulk copy operation.
+        cde::cp_async_bulk_commit_group();
+        // Wait for the group to have completed reading from shared memory.
+        cde::cp_async_bulk_wait_group_read<0>();
+    }
+
+    // Destroy barrier. This invalidates the memory region of the barrier. If
+    // further computations were to take place in the kernel, this allows the
+    // memory location of the shared memory barrier to be reused.
+    if (threadIdx.x == 0) {
+        (&bar)->~barrier();
+    }
+}
+
+void print_3d_matrix(fp8* matrix, int M, int K, int L) {
+    for (int i = 0; i < M; i++) {
+      std::cout << "row " << i << std::endl;
+      for (int k = 0; k < K; k++) {
+        for (int j = 0; j < L; j++) {
+        std::cout << int(uint8_t(matrix[i * (K * L) + k * L + j])) << " ";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
+    std::cout << std::endl;
+    std::cout << std::endl;
+  }
+}
+
+void add_one_3d_tensor_tile(int M, int K, int L, int row_offset, int col_offset, int depth_offset) {
+
+  static constexpr size_t tile_size_h = 1;
+  static constexpr size_t tile_size_w = 32;
+  static constexpr size_t tile_size_l = 32;
+
+  fp8 h_tensor[M][K][L];
+  for (int i = 0; i < M; i++) {
+    for (int k = 0; k < K; k++) {
+      for (int j = 0; j < L; j++) {
+        h_tensor[i][k][j] = fp8(4);
+      }
+    }
+  }
+
+fp8* d_tensor;
+CUDA_CHECK(cudaMalloc(&d_tensor, M * K * L * sizeof(fp8)));
+CUDA_CHECK(cudaMemcpy(d_tensor, h_tensor, M * K * L * sizeof(fp8), cudaMemcpyHostToDevice));
+
+// TMA setup
+auto tensor_map_h = create_3d_tensor_map<tile_size_h, tile_size_w, tile_size_l>(d_tensor, M, K, L);
+
+// Kernel launch
+dim3 dimBlock(32, 1, 1);
+dim3 dimGrid(1, 1);
+printf("calling kernel\n");
+add_one_3d_tensor_tile_kernel<tile_size_h, tile_size_w, tile_size_l><<<dimGrid, dimBlock>>>(M, K, L, tensor_map_h, row_offset, col_offset, depth_offset);
+CUDA_CHECK(cudaGetLastError());
+CUDA_CHECK(cudaDeviceSynchronize());
+printf("kernel finished\n");
+
+CUDA_CHECK(cudaMemcpy(h_tensor, d_tensor, M * K * L * sizeof(fp8), cudaMemcpyDeviceToHost));
+CUDA_CHECK(cudaFree(d_tensor));
+
+print_3d_matrix(&h_tensor[0][0][0], M, K, L);
+}
+
 int main() {
     int device;
 cudaGetDevice(&device);
@@ -316,9 +464,10 @@ cudaDeviceProp prop;
 cudaGetDeviceProperties(&prop, device);
 printf("Compute capability: %d.%d\n", prop.major, prop.minor);
 
-    // add_one_continous(2048, 16);
-  // add_one_matrix_tile(64, 64, 4, 40); // INT32: Min offset is 4 because we need to stay 16B aligned. We can continue over the matrix without issues. Padding is 0
-  add_one_matrix_tile(64, 64, 16, 48); // FP8: Min offset is 8 for reading and 16 for writing.
+  // // // add_one_continous(2048, 16);
+  // // add_one_matrix_tile(64, 64, 4, 40); // INT32: Min offset is 4 because we need to stay 16B aligned. We can continue over the matrix without issues. Padding is 0
+  // add_one_matrix_tile(64, 64, 16, 48); // FP8: Min offset is 8 for reading and 16 for writing.
+  add_one_3d_tensor_tile(4, 64, 64, 1, 8, 16);
 
   return 0;
 }

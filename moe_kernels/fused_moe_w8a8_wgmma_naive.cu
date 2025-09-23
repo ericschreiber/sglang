@@ -60,7 +60,7 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
     constexpr int block_shape[2] = {128, 128};
 
     const int exp_idx = expert_ids[warpM];
-    const fp8* exp_w = w + exp_idx * K * N;
+    // const fp8* exp_w = w + exp_idx * K * N;
     const int lane_id = threadIdx.x%32;
     const int w_row = warpN * BN + (lane_id>>2);
 
