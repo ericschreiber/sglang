@@ -47,6 +47,20 @@
             x.size(0), \
             x.size(1), \
             w.size(1), \
+            sorted_token_ids.size(0)
+
+#define MOE_CALL_EXTENDED static_cast<__nv_fp8_e4m3*>(x.data_ptr()), \
+            static_cast<float*>(x_scale.data_ptr()), \
+            static_cast<__nv_fp8_e4m3*>(w.data_ptr()), \
+            static_cast<float*>(w_scale.data_ptr()), \
+            static_cast<__nv_bfloat16*>(out.data_ptr()), \
+            static_cast<int*>(sorted_token_ids.data_ptr()), \
+            static_cast<int*>(expert_ids.data_ptr()), \
+            static_cast<int*>(num_tokens_post_padded.data_ptr()), \
+            top_k, \
+            x.size(0), \
+            x.size(1), \
+            w.size(1), \
             w.size(0), \
             sorted_token_ids.size(0)
 
@@ -56,8 +70,7 @@ void fused_moe_w8a8_prefetching(MOE_ARGS);
 void fused_moe_w8a8_smem(MOE_ARGS);
 void fused_moe_w8a8_unrollK(MOE_ARGS);
 
-void fused_moe_w8a8_wgmma_naive(MO
-    MOE_ARGS_EXTENDED);
+void fused_moe_w8a8_wgmma_naive(MOE_ARGS_EXTENDED);
 
 torch::Tensor fused_moe_launcher(
         torch::Tensor& x,
@@ -89,7 +102,7 @@ torch::Tensor fused_moe_launcher(
             fused_moe_w8a8_unrollK(MOE_CALL);
             break;
         case 4:
-            fused_moe_w8a8_wgmma_naive(MOE_CALL);
+            fused_moe_w8a8_wgmma_naive(MOE_CALL_EXTENDED);
             break;
     }
     return out;

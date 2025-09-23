@@ -22,9 +22,10 @@ my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "./moe_kernels/fused_moe_w8a8_prefetching.cu",
                                         "./moe_kernels/fused_moe_w8a8_smem.cu",
                                         "./moe_kernels/fused_moe_w8a8_unrollK.cu",
-                                        # "./moe_kernels/tma_test.cu",
+                                        "./moe_kernels/fused_moe_w8a8_wgmma_naive.cu",
                                         # "./moe_kernels/fused_moe_w8a8_regtiling.cu",
-                                        ], extra_cuda_cflags=["-lineinfo"])
+                                        ], extra_cuda_cflags=["-lineinfo"],
+                                        extra_ldflags=['-lcuda', '-lcudart'],)
 
 def get_stats(activated_experts):
     flops_1 = 2*num_tokens*w1.shape[1]*w1.shape[2]
@@ -48,7 +49,7 @@ def get_times(kernel_name, prof):
             ret.append(e.device_time_total)
     return ret
 
-KERNEL_VARIANT=2
+KERNEL_VARIANT=4
 
 def run_moe(topk_ids, eps=1e-10):
     x = torch.empty((num_tokens, hidden_size), dtype=torch.bfloat16).normal_(mean=0, std=0.05)
