@@ -2,14 +2,46 @@
 #include <cuda_fp8.h>
 #include <stdio.h>
 
+#include <cudaTypedefs.h> // PFN_cuTensorMapEncodeTiled, CUtensorMap
+
 // Not gonna type all that
 using fp8 = __nv_fp8_e4m3;
 
-template <int BM, int BK, int BN>
+template <int BlockMajorSize, int BlockMinorSize>
+CUtensorMap create_2d_fp8_tensor_map(fp8* gmem_ptr, int gmem_width, int gmem_height) {
+    CUtensorMap tma_map_host;
+    void* gmem_address = (void*)gmem_ptr;
+    uint64_t gmem_prob_shape[2] = {(uint64_t)gmem_width, (uint64_t)gmem_height};
+    uint64_t gmem_prob_stride[1] = {sizeof(fp8) * gmem_width};
+    uint32_t smem_box_shape[2] = {uint32_t(BlockMinorSize), uint32_t(BlockMajorSize)};
+    uint32_t smem_box_stride[2] = {1, 1};
+
+    CUresult result = cuTensorMapEncodeTiled(
+        &tma_map_host, 
+        CU_TENSOR_MAP_DATA_TYPE_UINT8, 
+        2,                                  // cuuint32_t tensorRank
+        gmem_address,                       // void *globalAddress, 
+        gmem_prob_shape,                    // const cuuint64_t *globalDim,
+        gmem_prob_stride,                   // const cuuint64_t *globalStrides,
+        smem_box_shape,                     // const cuuint32_t *boxDim,
+        smem_box_stride,                    // const cuuint32_t *elementStrides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        CU_TENSOR_MAP_SWIZZLE_NONE, 
+        CU_TENSOR_MAP_L2_PROMOTION_NONE, 
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+    );
+
+    assert(result == CUDA_SUCCESS);
+    return tma_map_host;
+}
+
+template <int BM, int BK, int BN, int WGMMA_BK>
 __global__ void fused_moe_w8a8_unroll_block_kernel(
         const fp8* __restrict__ x,
+        // const __grid_constant__ CUtensorMap tensor_map_x,
         const float* __restrict__ x_scale,
-        const fp8* __restrict__ w,
+        // const fp8* __restrict__ w,
+        const __grid_constant__ CUtensorMap tensor_map_w,
         const float* __restrict__ w_scale,
         __nv_bfloat16* __restrict__ out,
         const int* __restrict__ sorted_token_ids,
@@ -42,8 +74,8 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
     token_src[0] = sorted_token_ids[warpM*BM + (lane_id>>2)] / top_k;
     token_src[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8] / top_k;
 
-    __shared__ alignas(16) fp8 tile_xT[8][128];     // col-major transpose, so same as in global memory
-    __shared__ alignas(16) fp8 tile_wT[64][128];    // row-major transpose, so same as in global memory
+    __shared__ alignas(128) fp8 tile_xT[BM][BK];        // row-major, so same as in global memory
+    __shared__ alignas(128) fp8 tile_wT[BN][BK];        // col-major, so same as in global memory
 
     // bool p = blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0;
 
@@ -65,14 +97,27 @@ __global__ void fused_moe_w8a8_unroll_block_kernel(
 
         float scale_w = w_scale[exp_idx * scale_rows_w * scale_cols_w + (w_row/block_shape[1])*scale_cols_w + block];
 
-
         // Load tiles to SMEM
+        #pragma nv_diag_suppress static_var_with_dynamic_init
+        __shared__ barrier barX;
+        __shared__ barrier barW;
         if (threadIdx.x == 0)
         {
-            // Load tile of w using 1 TMA transfer
-            cuda::memcpy_async(tile_wT, exp_w + w_row*K + block*block_shape[0], sizeof(fp8)*64*128, bar);
-            barrier::arrival_token token = bar.arrive();
-            bar.wait(std::move(token));
+            init(&barX, blockDim.x);
+            init(&barW, blockDim.x);
+            cde::fence_proxy_async_shared_cta();
+        }
+        __syncthreads();
+
+        barrier::arrival_token tokenX, tokenW;
+
+        // Load tile of w using 1 TMA transfer
+        int b_off = block * block_shape[0];
+        if (threadIdx.x == 0) {
+            cde::cp_async_bulk_tensor_2d_global_to_shared(&tile_wT[0], &tensor_map_w, w_col, w_row, barW);
+            tokenW = cuda::device::barrier_arrive_tx(barW, 1, sizeof(tile_wT));
+        } else {
+            tokenW = barW.arrive();
         }
 
 
@@ -187,15 +232,18 @@ void fused_moe_w8a8_unrollK(
         )
 {
     constexpr int BM = 64;
-    constexpr int BK = 32;
+    constexpr int BK = 128;
     constexpr int BN = 8;
+    constexpr int WGMMA_BK = 32;
     constexpr int num_warps_x = 4;
     constexpr int num_warps_y = 2;
 
     dim3 dimBlock(32*num_warps_x, num_warps_y, 1);
     dim3 dimGrid(std::ceil((float)N/(BN*num_warps_x)), std::ceil((float)sorted_num/(BM*num_warps_y)), 1);
 
-    fused_moe_w8a8_unroll_block_kernel<BM, BK, BN><<<dimGrid, dimBlock>>>(
+    
+
+    fused_moe_w8a8_unroll_block_kernel<BM, BK, BN, WGMMA_BK><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
             w,
