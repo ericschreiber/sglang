@@ -40,6 +40,8 @@ void fused_moe_w8a8_prefetching(MOE_ARGS);
 void fused_moe_w8a8_smem(MOE_ARGS);
 void fused_moe_w8a8_unrollK(MOE_ARGS);
 
+void advanced_tma_offset_copy();
+
 torch::Tensor fused_moe_launcher(
         torch::Tensor& x,
         torch::Tensor& x_scale,
@@ -67,6 +69,10 @@ torch::Tensor fused_moe_launcher(
             break;
         case 3:
             fused_moe_w8a8_unrollK(MOE_CALL);
+            break;
+
+        case 4:
+            advanced_tma_offset_copy();
             break;
     }
     return out;
