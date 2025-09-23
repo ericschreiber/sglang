@@ -66,6 +66,9 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
         int N
         )
 {
+    if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+        printf("Kernel launched\n");
+    }
     const int32_t warpN = (blockIdx.x*blockDim.x+threadIdx.x)/32;
     const int32_t warpM = blockIdx.y*blockDim.y+threadIdx.y;
 
@@ -128,114 +131,77 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
         // Load tile of w using 1 TMA transfer
         int b_off = block * block_shape[0]; // this is the same as w_col for 0th item
         if (threadIdx.x == 0) {
-            cde::cp_async_bulk_tensor_3d_global_to_shared(&tile_wT[0], &tensor_map_w, b_off, w_row, exp_idx, barW);
-            tokenW = cuda::device::barrier_arrive_tx(barW, 1, sizeof(tile_wT));
+            if (exp_idx > 90) {
+                printf("Loading with exp_idx %d, w_row %d, b_off %d\n", exp_idx, w_row, b_off);
+            }
+            cde::cp_async_bulk_tensor_3d_global_to_shared(&tile_wT[0], &tensor_map_w, w_row, exp_idx, b_off, barW); // This works but is wrong! TODO
+            // tokenW = cuda::device::barrier_arrive_tx(barW, 1, sizeof(tile_wT));
         } else {
-            tokenW = barW.arrive();
+            // tokenW = barW.arrive();
         }
-        barW.wait(std::move(tokenW));
+        // barW.wait(std::move(tokenW));
         __syncthreads();
 
 
-        // STEP 1 load x with known implementation and use mma
-        // STEP 2 load x with known implementation and use wgmma
-        // STEP 3 load x through SMem
+        // // STEP 1 load x with known implementation and use mma
+        // // STEP 2 load x with known implementation and use wgmma
+        // // STEP 3 load x through SMem
 
-        float acc[4] = {0.f};
+        // float acc[4] = {0.f};
 
-        uint32_t tile_x[2][2][4];
-        uint4 loaded;
-        if (token_src[0] < M)
-        {
-            loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off )[lane_id%4];
-            tile_x[0][0][0] = loaded.x;
-            tile_x[0][0][1] = loaded.y; 
-            tile_x[0][0][2] = loaded.z;
-            tile_x[0][0][3] = loaded.w;
-            loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off + 64)[lane_id%4];
-            tile_x[0][1][0] = loaded.x;
-            tile_x[0][1][1] = loaded.y;
-            tile_x[0][1][2] = loaded.z;
-            tile_x[0][1][3] = loaded.w;
-        }
-        if (token_src[1] < M)
-        {
-            loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off)[lane_id%4];
-            tile_x[1][0][0] = loaded.x;
-            tile_x[1][0][1] = loaded.y;
-            tile_x[1][0][2] = loaded.z;
-            tile_x[1][0][3] = loaded.w;
-            loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off + 64)[lane_id%4];
-            tile_x[1][1][0] = loaded.x;
-            tile_x[1][1][1] = loaded.y;
-            tile_x[1][1][2] = loaded.z;
-            tile_x[1][1][3] = loaded.w;
-        }
+        // uint32_t tile_x[2][2][4];
+        // uint4 loaded;
+        // if (token_src[0] < M)
+        // {
+        //     loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off )[lane_id%4];
+        //     tile_x[0][0][0] = loaded.x;
+        //     tile_x[0][0][1] = loaded.y; 
+        //     tile_x[0][0][2] = loaded.z;
+        //     tile_x[0][0][3] = loaded.w;
+        //     loaded = reinterpret_cast<const uint4*>(x + token_src[0]*K + b_off + 64)[lane_id%4];
+        //     tile_x[0][1][0] = loaded.x;
+        //     tile_x[0][1][1] = loaded.y;
+        //     tile_x[0][1][2] = loaded.z;
+        //     tile_x[0][1][3] = loaded.w;
+        // }
+        // if (token_src[1] < M)
+        // {
+        //     loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off)[lane_id%4];
+        //     tile_x[1][0][0] = loaded.x;
+        //     tile_x[1][0][1] = loaded.y;
+        //     tile_x[1][0][2] = loaded.z;
+        //     tile_x[1][0][3] = loaded.w;
+        //     loaded = reinterpret_cast<const uint4*>(x + token_src[1]*K + b_off + 64)[lane_id%4];
+        //     tile_x[1][1][0] = loaded.x;
+        //     tile_x[1][1][1] = loaded.y;
+        //     tile_x[1][1][2] = loaded.z;
+        //     tile_x[1][1][3] = loaded.w;
+        // }
 
-        uint32_t loaded_w[2];
-        int iter = 0;
-        for(int k = 0; k < block_shape[0]; k += BK){
-            int w_col = (lane_id%4)*4 + k;
-            loaded_w[0] = *reinterpret_cast<const uint32_t*>(tile_wT + w_row*K + w_col);
-            loaded_w[1] = *reinterpret_cast<const uint32_t*>(tile_wT + w_row*K + w_col + 64);
+        // uint32_t loaded_w[2];
+        // int iter = 0;
+        // for(int k = 0; k < block_shape[0]; k += BK){
+        //     int w_col = (lane_id%4)*4 + k;
+        //     loaded_w[0] = *reinterpret_cast<const uint32_t*>(tile_wT + w_row*K + w_col);
+        //     loaded_w[1] = *reinterpret_cast<const uint32_t*>(tile_wT + w_row*K + w_col + 64);
 
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
-                : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-                : "r"(tile_x[0][0][iter]), "r"(tile_x[1][0][iter]), "r"(tile_x[0][1][iter]), "r"(tile_x[1][1][iter]), "r"(loaded_w[0]), "r"(loaded_w[1]));
-            iter++;
-        }
-
-        // const int w_col = (lane_id%4)*16 + b_off;
-        // // tile_w[0] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
-        // loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col);
-        // tile_w[0][0] = loaded.x;
-        // tile_w[0][1] = loaded.y;
-        // tile_w[0][2] = loaded.z;
-        // tile_w[0][3] = loaded.w;
-        // // // tile_w[1] = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 64);
-        // loaded = *reinterpret_cast<const uint4*>(exp_w + w_row*K + w_col + 64);
-        // tile_w[1][0] = loaded.x;
-        // tile_w[1][1] = loaded.y;
-        // tile_w[1][2] = loaded.z;
-        // tile_w[1][3] = loaded.w;
-
-        // // tile_w[0][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col);
-        // // tile_w[0][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 4);
-        // // tile_w[0][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 8);
-        // // tile_w[0][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 12);
-
-        // // tile_w[1][0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 64);
-        // // tile_w[1][1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 68);
-        // // tile_w[1][2] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 72);
-        // // tile_w[1][3] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 76);
-
-
-        // asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
+        //     asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
         //         : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-        //         : "r"(tile_x[0][0][0]), "r"(tile_x[1][0][0]), "r"(tile_x[0][1][0]), "r"(tile_x[1][1][0]), "r"(tile_w[0][0]), "r"(tile_w[1][0]));
+        //         : "r"(tile_x[0][0][iter]), "r"(tile_x[1][0][iter]), "r"(tile_x[0][1][iter]), "r"(tile_x[1][1][iter]), "r"(loaded_w[0]), "r"(loaded_w[1]));
+        //     iter++;
+        // }
 
-        // asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
-        //         : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-        //         : "r"(tile_x[0][0][1]), "r"(tile_x[1][0][1]), "r"(tile_x[0][1][1]), "r"(tile_x[1][1][1]), "r"(tile_w[0][1]), "r"(tile_w[1][1]));
-
-        // asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
-        //         : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-        //         : "r"(tile_x[0][0][2]), "r"(tile_x[1][0][2]), "r"(tile_x[0][1][2]), "r"(tile_x[1][1][2]), "r"(tile_w[0][2]), "r"(tile_w[1][2]));
-
-        // asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
-        //         : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
-        //         : "r"(tile_x[0][0][3]), "r"(tile_x[1][0][3]), "r"(tile_x[0][1][3]), "r"(tile_x[1][1][3]), "r"(tile_w[0][3]), "r"(tile_w[1][3]));
         
-        if (token_src[0] < M)
-        {
-            f_acc[0] += scale_x[0] * scale_w * acc[0];
-            f_acc[1] += scale_x[0] * scale_w * acc[1];
-        }
-        if (token_src[1] < M)
-        {
-            f_acc[2] += scale_x[1] * scale_w * acc[2];
-            f_acc[3] += scale_x[1] * scale_w * acc[3];
-        }
+        // if (token_src[0] < M)
+        // {
+        //     f_acc[0] += scale_x[0] * scale_w * acc[0];
+        //     f_acc[1] += scale_x[0] * scale_w * acc[1];
+        // }
+        // if (token_src[1] < M)
+        // {
+        //     f_acc[2] += scale_x[1] * scale_w * acc[2];
+        //     f_acc[3] += scale_x[1] * scale_w * acc[3];
+        // }
     }
     if (token_src[0] < M)
     {
@@ -268,7 +234,7 @@ void fused_moe_w8a8_wgmma_naive(
     // Step 1
     constexpr int BM = 16;
     constexpr int BK = 128;
-    constexpr int BN = 8;
+    constexpr int BN = 16; // we need at least 16 to use TMA
     constexpr int WGMMA_BK = 32;
     constexpr int num_warps_x = 4;
     constexpr int num_warps_y = 2;
@@ -277,7 +243,7 @@ void fused_moe_w8a8_wgmma_naive(
     dim3 dimGrid(std::ceil((float)N/(BN*num_warps_x)), std::ceil((float)sorted_num/(BM*num_warps_y)), 1);
 
     auto tensor_map_w = create_3d_tensor_map<1, BN, BK>(w, num_experts, N, K);
-
+    printf("tensor_map_w created\n");
     fused_moe_w8a8_wgmma_naive_kernel<BM, BK, BN, WGMMA_BK><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
@@ -292,4 +258,18 @@ void fused_moe_w8a8_wgmma_naive(
             K,
             N
             );
+
+    // Check for kernel launch errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    // Check for kernel execution errors
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Kernel execution error: %s\n", cudaGetErrorString(err));
+        return;
+    }
 }

@@ -423,21 +423,24 @@ void print_3d_matrix(fp8* matrix, int M, int K, int L) {
 void add_one_3d_tensor_tile(int M, int K, int L, int row_offset, int col_offset, int depth_offset) {
 
   static constexpr size_t tile_size_h = 1;
-  static constexpr size_t tile_size_w = 32;
-  static constexpr size_t tile_size_l = 32;
+  static constexpr size_t tile_size_w = 128;
+  static constexpr size_t tile_size_l = 8;
 
-  fp8 h_tensor[M][K][L];
+  size_t nelem = size_t(M) * size_t(K) * size_t(L);
+  std::vector<fp8> h_tensor(nelem, fp8(4));
+
   for (int i = 0; i < M; i++) {
     for (int k = 0; k < K; k++) {
       for (int j = 0; j < L; j++) {
-        h_tensor[i][k][j] = fp8(4);
+        h_tensor[i * K * L + k * L + j] = fp8(4);
       }
     }
   }
 
 fp8* d_tensor;
-CUDA_CHECK(cudaMalloc(&d_tensor, M * K * L * sizeof(fp8)));
-CUDA_CHECK(cudaMemcpy(d_tensor, h_tensor, M * K * L * sizeof(fp8), cudaMemcpyHostToDevice));
+  // copy to device
+  CUDA_CHECK(cudaMalloc(&d_tensor, nelem * sizeof(fp8)));
+  CUDA_CHECK(cudaMemcpy(d_tensor, h_tensor.data(), nelem * sizeof(fp8), cudaMemcpyHostToDevice));
 
 // TMA setup
 auto tensor_map_h = create_3d_tensor_map<tile_size_h, tile_size_w, tile_size_l>(d_tensor, M, K, L);
@@ -451,10 +454,10 @@ CUDA_CHECK(cudaGetLastError());
 CUDA_CHECK(cudaDeviceSynchronize());
 printf("kernel finished\n");
 
-CUDA_CHECK(cudaMemcpy(h_tensor, d_tensor, M * K * L * sizeof(fp8), cudaMemcpyDeviceToHost));
+CUDA_CHECK(cudaMemcpy(h_tensor.data(), d_tensor, nelem * sizeof(fp8), cudaMemcpyDeviceToHost));
 CUDA_CHECK(cudaFree(d_tensor));
 
-print_3d_matrix(&h_tensor[0][0][0], M, K, L);
+// print_3d_matrix(&h_tensor[0][0][0], M, K, L);
 }
 
 int main() {
@@ -467,7 +470,7 @@ printf("Compute capability: %d.%d\n", prop.major, prop.minor);
   // // // add_one_continous(2048, 16);
   // // add_one_matrix_tile(64, 64, 4, 40); // INT32: Min offset is 4 because we need to stay 16B aligned. We can continue over the matrix without issues. Padding is 0
   // add_one_matrix_tile(64, 64, 16, 48); // FP8: Min offset is 8 for reading and 16 for writing.
-  add_one_3d_tensor_tile(4, 64, 64, 1, 8, 16);
+  add_one_3d_tensor_tile(257, 256, 7168, 256,96,7040);
 
   return 0;
 }
