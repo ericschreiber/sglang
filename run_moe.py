@@ -17,14 +17,23 @@ from sgl_kernel import gelu_and_mul, silu_and_mul
 import triton.language as tl
 torch.utils.cpp_extension.COMMON_NVCC_FLAGS = []
 
+import os
+
+os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a" # Need this for WGMMA
+
 my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "fused_moe_w8a8.cu",
                                         "./moe_kernels/fused_moe_w8a8_prefetching.cu",
                                         "./moe_kernels/fused_moe_w8a8_smem.cu",
                                         "./moe_kernels/fused_moe_w8a8_unrollK.cu",
                                         "./moe_kernels/fused_moe_w8a8_wgmma_naive.cu",
+                                        "./moe_kernels/fused_moe_w8a8_wgmma_tma_naive.cu",
                                         # "./moe_kernels/fused_moe_w8a8_regtiling.cu",
-                                        ], extra_cuda_cflags=["-lineinfo"],
+                                        ], 
+                                        extra_cuda_cflags=[
+                                            "-lineinfo",
+                                            "-gencode=arch=compute_90a,code=sm_90a" # Need this for WGMMA
+                                        ],
                                         extra_ldflags=['-lcuda', '-lcudart'],)
 
 def get_stats(activated_experts):

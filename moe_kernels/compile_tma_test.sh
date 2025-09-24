@@ -20,7 +20,7 @@ fi
 nvcc -o tma_test tma_test.cu \
     -std=c++17 \
     -O3 \
-    -gencode=arch=compute_90,code=sm_90 \
+    -gencode=arch=compute_90a,code=sm_90a \
     -I${CUTLASS_PATH}/include \
     -I${CUTLASS_PATH}/tools/util/include \
     -I${CUDA_PATH}/include \
