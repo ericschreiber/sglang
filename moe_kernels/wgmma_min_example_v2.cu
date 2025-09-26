@@ -4,33 +4,6 @@
 #include <cassert>
 #include <cuda/barrier>
 #include <cuda/ptx>
-#include <cudaTypedefs.h> // PFN_cuTensorMapEncodeTiled, CUtensorMap
-
-using barrier = cuda::barrier<cuda::thread_scope_block>;
-namespace cde = cuda::device::experimental;
-
-// using SM90_64x16x32_F32E4M3E4M3_SS_TN = SM90::GMMA::MMA_64x16x32_F32E4M3E4M3_SS_TN<scaleA, scaleB>;
-
-// template <GMMA::ScaleIn scaleA, GMMA::ScaleIn scaleB>
-// struct MMA_Traits<SM90_64x16x32_F32E4M3E4M3_SS_TN<scaleA, scaleB>>
-// {
-//   using ValTypeD = float;
-//   using ValTypeA = float_e4m3_t;
-//   using ValTypeB = float_e4m3_t;
-//   using ValTypeC = float;
-
-//   using FrgTypeA = GMMA::smem_desc<GMMA::Major::K>;
-//   using FrgTypeB = GMMA::smem_desc<GMMA::Major::K>;
-
-//   using Shape_MNK = Shape<_64,_16,_32>;
-//   using ThrID   = Layout<_128>;
-//   using ALayout = GMMA::ABLayout< 64, 32>;
-//   using BLayout = GMMA::ABLayout< 16, 32>;
-//   using CLayout = GMMA::CLayout_64x16;
-
-//   GMMA::ScaleOut accumulate_ = GMMA::ScaleOut::One;
-// };
-
 
 // Type alias for FP8 E4M3
 using fp8 = __nv_fp8_e4m3;
@@ -60,7 +33,7 @@ __device__ void warpgroup_wait() {
 __device__ static inline uint64_t matrix_descriptor_encode(uint64_t x) { return (((x) & 0x3FFFF) >> 0x4); }
 
 __device__ uint64_t make_smem_desc(fp8* ptr, int leading_dim_bytes, int stride_dim_bytes) {
-    uint32_t addr = static_cast<uint64_t>(__cvta_generic_to_shared(ptr));
+    uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
     uint64_t desc = 0x0000000000000000;
     desc |= matrix_descriptor_encode(addr);
     desc |= matrix_descriptor_encode((uint64_t)leading_dim_bytes) << 16;
@@ -69,7 +42,6 @@ __device__ uint64_t make_smem_desc(fp8* ptr, int leading_dim_bytes, int stride_d
     return desc;
   }
 
-
 // WGMMA function for M64N16K32 with FP8 E4M3 inputs and FP32 output
 template<int ScaleD, int ScaleA, int ScaleB>
 __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
@@ -77,8 +49,16 @@ __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
     // uint64_t desc_a = make_smem_desc(sA, 32, 256);
     // uint64_t desc_b = make_smem_desc(sB, 32, 256);
 
-    uint64_t desc_a = make_smem_desc(sA, 16, 256);
-    uint64_t desc_b = make_smem_desc(sB, 16, 256);
+    uint64_t desc_a = make_smem_desc(sA, 1024, 128);
+    uint64_t desc_b = make_smem_desc(sB, 128, 128);
+
+    // uint64_t desc_a = make_smem_desc(sA, 128, 256);
+    // uint64_t desc_b = make_smem_desc(sB, 128, 256);
+
+    if (threadIdx.x == 0) {
+        printf("desc_a: %llu\n", desc_a);
+        printf("desc_b: %llu\n", desc_b);
+    }
     asm volatile(
         "wgmma.mma_async.sync.aligned.m64n16k32.f32.e4m3.e4m3 "
         "{%0, %1, %2, %3, %4, %5, %6, %7}, "
@@ -92,76 +72,51 @@ __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
 
 // Minimal kernel demonstrating WGMMA usage
 __global__ void wgmma_minimal_kernel(
-    // const fp8* __restrict__ A_global,  // 64x32 matrix A
-    // const fp8* __restrict__ B_global,  // 16x32 matrix B  
-    const __grid_constant__ CUtensorMap tensor_mapA,
-    const __grid_constant__ CUtensorMap tensor_mapB,
+    const fp8* __restrict__ A_global,  // 64x32 matrix A
+    const fp8* __restrict__ B_global,  // 16x32 matrix B  
     float* __restrict__ C_global       // 64x16 output matrix C
 ) {
     // Shared memory for matrices (aligned to 128 bytes)
     __shared__ alignas(128) fp8 sA[64][32];  // 64x32 matrix A
     __shared__ alignas(128) fp8 sB[16][32];  // 16x32 matrix B
-
-    #pragma nv_diag_suppress static_var_with_dynamic_init
-    __shared__ barrier barA;
-    __shared__ barrier barB;
-
-    if (threadIdx.x == 0) {
-        init(&barA, blockDim.x);
-        init(&barB, blockDim.x);
-        cde::fence_proxy_async_shared_cta();
-    }
-    __syncthreads();
-    
-    barrier::arrival_token tokenA;
-    barrier::arrival_token tokenB;
     
     const int lane_id = threadIdx.x % 32;
     const int warp_id = threadIdx.x / 32;
     
-    // // Load matrix A into shared memory (64x32)
-    // // Use coalesced loads - each thread loads one element per iteration
-    // for (int i = threadIdx.x; i < 64 * 32; i += blockDim.x) {
-    //     int row = i / 32;
-    //     int col = i % 32;
-    //     sA[row][col] = A_global[i];
-    // }
-    
-    // // Load matrix B into shared memory (16x32)
-    // for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
-    //     int row = i / 32;
-    //     int col = i % 32;
-    //     sB[row][col] = B_global[i];
-    // }
+    // Load matrix A into shared memory (64x32)
+    // Use coalesced loads - each thread loads one element per iteration
+    for (int i = threadIdx.x; i < 64 * 32; i += blockDim.x) {
+        int row = i / 32;
+        int col = i % 32;
 
-    // Check loading to SMem
-    // if (threadIdx.x == 0) {
-    //     for (int i = 0; i < 64; i++) {
-    //         for (int j = 0; j < 32; j++) {
-    //             sA[i][j] = A_global[i * 32 + j];
-    //         }
-    //     }
-    //     for (int i = 0; i < 16; i++) {
-    //         for (int j = 0; j < 32; j++) {
-    //             sB[i][j] = B_global[i * 32 + j];
-    //         }
-    //     }
-    // }
-    if (threadIdx.x == 0) {
-        cde::cp_async_bulk_tensor_2d_global_to_shared(&sA[0], &tensor_mapA, 0, 0, barA);
-        tokenA = cuda::device::barrier_arrive_tx(barA, 1, sizeof(sA));
-    } else {
-        tokenA = barA.arrive();
+        int m0 = row % 8;
+        int m1 = row / 8;
+        int k0 = col % 16;
+        int k1 = col / 16;
+        int ofs = m0 * 16 + m1 * 128 + k0 + k1 * 1024;
+
+        int sw_row = ofs / 32;
+        int sw_col = ofs % 32;
+
+        sA[sw_row][sw_col] = A_global[i];
     }
-    if (threadIdx.x == 0) {
-        cde::cp_async_bulk_tensor_2d_global_to_shared(&sB[0], &tensor_mapB, 0, 0, barB);
-        tokenB = cuda::device::barrier_arrive_tx(barB, 1, sizeof(sB));
-    } else {
-        tokenB = barB.arrive();
+    
+    // Load matrix B into shared memory (16x32)
+    for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
+        int row = i / 32;
+        int col = i % 32;
+
+        int m0 = row % 8;
+        int m1 = row / 8;
+        int k0 = col % 16;
+        int k1 = col / 16;
+        int ofs = m0 * 16 + m1 * 128 + k0 + k1 * 256;
+
+        int sw_row = ofs / 32;
+        int sw_col = ofs % 32;
+
+        sB[sw_row][sw_col] = B_global[i];
     }
-    barA.wait(std::move(tokenA));
-    barB.wait(std::move(tokenB));
-    __syncthreads();
     
     __syncthreads();
     
@@ -179,94 +134,59 @@ __global__ void wgmma_minimal_kernel(
     __syncthreads();
 
     if (threadIdx.x == 0) {
-        // acc[0][0][0] = 0.0f;
-        // acc[0][0][1] = 1.0f;
-        // acc[0][1][0] = 8.0f;
-        // acc[0][1][1] = 9.0f;
-        // acc[1][0][0] = 800.0f;
-        // acc[1][0][1] = 801.0f;
-        // acc[1][1][0] = 808.0f;
-        // acc[1][1][1] = 809.0f;
         printf("Thread 0\n");
         printf("acc[0][0][0]: %f\n", acc[0][0][0]);
         printf("acc[0][0][1]: %f\n", acc[0][0][1]);
-        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
-        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
         printf("acc[1][0][0]: %f\n", acc[1][0][0]);
         printf("acc[1][0][1]: %f\n", acc[1][0][1]);
+        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
+        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
         printf("acc[1][1][0]: %f\n", acc[1][1][0]);
         printf("acc[1][1][1]: %f\n", acc[1][1][1]);
     }
     if (threadIdx.x == 1) {
-        // acc[0][0][0] = 2.0f;
-        // acc[0][0][1] = 3.0f;
-        // acc[0][1][0] = 10.0f;
-        // acc[0][1][1] = 11.0f;
-        // acc[1][0][0] = 802.0f;
-        // acc[1][0][1] = 803.0f;
-        // acc[1][1][0] = 810.0f;
-        // acc[1][1][1] = 811.0f;
         printf("Thread 1\n");
         printf("acc[0][0][0]: %f\n", acc[0][0][0]);
         printf("acc[0][0][1]: %f\n", acc[0][0][1]);
-        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
-        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
-    }
-    if (threadIdx.x == 2) {
-        // acc[0][0][0] = 4.0f;
-        // acc[0][0][1] = 5.0f;
-        // acc[0][1][0] = 12.0f;
-        // acc[0][1][1] = 13.0f;
-        // acc[1][0][0] = 804.0f;
-        // acc[1][0][1] = 805.0f;
-        // acc[1][1][0] = 812.0f;
-        // acc[1][1][1] = 813.0f;
-        printf("Thread 2\n");
-        printf("acc[0][0][0]: %f\n", acc[0][0][0]);
-        printf("acc[0][0][1]: %f\n", acc[0][0][1]);
-        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
-        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
-    }
-    if (threadIdx.x == 3) {
-        // acc[0][0][0] = 6.0f;
-        // acc[0][0][1] = 7.0f;
-        // acc[0][1][0] = 14.0f;
-        // acc[0][1][1] = 15.0f;
-        // acc[1][0][0] = 806.0f;
-        // acc[1][0][1] = 807.0f;
-        // acc[1][1][0] = 814.0f;
-        // acc[1][1][1] = 815.0f;
-        printf("Thread 3\n");
-        printf("acc[0][0][0]: %f\n", acc[0][0][0]);
-        printf("acc[0][0][1]: %f\n", acc[0][0][1]);
-        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
-        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
-    }
-    if (threadIdx.x == 4) {
-        // acc[0][0][0] = 100.0f;
-        // acc[0][0][1] = 101.0f;
-        // acc[0][1][0] = 108.0f;
-        // acc[0][1][1] = 109.0f;
-        // acc[1][0][0] = 900.0f;
-        // acc[1][0][1] = 901.0f;
-        // acc[1][1][0] = 908.0f;
-        // acc[1][1][1] = 909.0f;
-        printf("Thread 4\n");
-        printf("acc[0][0][0]: %f\n", acc[0][0][0]);
-        printf("acc[0][0][1]: %f\n", acc[0][0][1]);
-        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
-        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
         printf("acc[1][0][0]: %f\n", acc[1][0][0]);
         printf("acc[1][0][1]: %f\n", acc[1][0][1]);
+        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
+        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
         printf("acc[1][1][0]: %f\n", acc[1][1][0]);
         printf("acc[1][1][1]: %f\n", acc[1][1][1]);
     }
-    if (threadIdx.x == 8) {
-        printf("Thread 8\n");
+    if (threadIdx.x == 2) {
+        printf("Thread 2\n");
         printf("acc[0][0][0]: %f\n", acc[0][0][0]);
         printf("acc[0][0][1]: %f\n", acc[0][0][1]);
+        printf("acc[1][0][0]: %f\n", acc[1][0][0]);
+        printf("acc[1][0][1]: %f\n", acc[1][0][1]);
         printf("acc[0][1][0]: %f\n", acc[0][1][0]);
         printf("acc[0][1][1]: %f\n", acc[0][1][1]);
+        printf("acc[1][1][0]: %f\n", acc[1][1][0]);
+        printf("acc[1][1][1]: %f\n", acc[1][1][1]);
+    }
+    if (threadIdx.x == 3) {
+        printf("Thread 3\n");
+        printf("acc[0][0][0]: %f\n", acc[0][0][0]);
+        printf("acc[0][0][1]: %f\n", acc[0][0][1]);
+        printf("acc[1][0][0]: %f\n", acc[1][0][0]);
+        printf("acc[1][0][1]: %f\n", acc[1][0][1]);
+        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
+        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
+        printf("acc[1][1][0]: %f\n", acc[1][1][0]);
+        printf("acc[1][1][1]: %f\n", acc[1][1][1]);
+    }
+    if (threadIdx.x == 4) {
+        printf("Thread 4\n");
+        printf("acc[0][0][0]: %f\n", acc[0][0][0]);
+        printf("acc[0][0][1]: %f\n", acc[0][0][1]);
+        printf("acc[1][0][0]: %f\n", acc[1][0][0]);
+        printf("acc[1][0][1]: %f\n", acc[1][0][1]);
+        printf("acc[0][1][0]: %f\n", acc[0][1][0]);
+        printf("acc[0][1][1]: %f\n", acc[0][1][1]);
+        printf("acc[1][1][0]: %f\n", acc[1][1][0]);
+        printf("acc[1][1][1]: %f\n", acc[1][1][1]);
     }
     
     // Store results back to global memory
@@ -280,11 +200,11 @@ __global__ void wgmma_minimal_kernel(
             int thread_in_warp_idx = threadIdx.x % 32;
 
             int row0 = thread_in_warp_idx / 4 * row_length;
-            int row1 = row0 + 8*row_length;
+            int row1 = 8*row_length + row0;
 
             int col0 = (thread_in_warp_idx % 4) * 2;
             int col1 = 8 + (thread_in_warp_idx % 4) * 2;
-
+            
             // // Write the 8 accumulator values
             // if (base_idx < 64 * 16) C_global[base_idx] = acc[0][0][0];
             // if (base_idx + 1 < 64 * 16) C_global[base_idx + 1] = acc[0][0][1];
@@ -305,34 +225,6 @@ __global__ void wgmma_minimal_kernel(
             C_global[warp_group_off + row1 + col1 + 1] = acc[1][1][1];
         }
     }
-}
-
-template <int BlockMajorSize, int BlockMinorSize>
-CUtensorMap create_tensor_map(fp8* gmem_ptr, int gmem_width, int gmem_height) {
-    CUtensorMap tma_map_host;
-    void* gmem_address = (void*)gmem_ptr;
-    uint64_t gmem_prob_shape[2] = {(uint64_t)gmem_width, (uint64_t)gmem_height};
-    uint64_t gmem_prob_stride[1] = {sizeof(fp8) * gmem_width};
-    uint32_t smem_box_shape[2] = {uint32_t(BlockMinorSize), uint32_t(BlockMajorSize)};
-    uint32_t smem_box_stride[2] = {1, 1};
-
-    CUresult result = cuTensorMapEncodeTiled(
-        &tma_map_host, 
-        CU_TENSOR_MAP_DATA_TYPE_UINT8, 
-        2,                                  // cuuint32_t tensorRank
-        gmem_address,                       // void *globalAddress, 
-        gmem_prob_shape,                    // const cuuint64_t *globalDim,
-        gmem_prob_stride,                   // const cuuint64_t *globalStrides,
-        smem_box_shape,                     // const cuuint32_t *boxDim,
-        smem_box_stride,                    // const cuuint32_t *elementStrides,
-        CU_TENSOR_MAP_INTERLEAVE_NONE,
-        CU_TENSOR_MAP_SWIZZLE_NONE, 
-        CU_TENSOR_MAP_L2_PROMOTION_NONE, 
-        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-    );
-
-    assert(result == CUDA_SUCCESS);
-    return tma_map_host;
 }
 
 // Host function to launch the kernel
@@ -357,12 +249,13 @@ void run_wgmma_minimal_example() {
     for (int i = 0; i < N * K; i++) {
         if (i%K < 4 && i<2*K){
             h_B[i] = fp8(i%K);
-            // h_B[i] = fp8(0);
+            // h_B[i] = fp8(1);
         } else {
             // h_B[i] = fp8(1);
             h_B[i] = fp8(0);
         }
     }
+
 
     printf("A:\n");
     for (int i = 0; i < M; i++) {
@@ -391,17 +284,13 @@ void run_wgmma_minimal_example() {
     // Copy data to device
     cudaMemcpy(d_A, h_A, M * K * sizeof(fp8), cudaMemcpyHostToDevice);
     cudaMemcpy(d_B, h_B, N * K * sizeof(fp8), cudaMemcpyHostToDevice);
-
-    // Create tensor maps
-    auto tensor_mapA = create_tensor_map<64, 32>(d_A, M, K);
-    auto tensor_mapB = create_tensor_map<16, 32>(d_B, N, K);
     
     // Launch kernel with 128 threads (warp group size) per block
     dim3 blockDim(128);
     dim3 gridDim(1);
     
     printf("Launching WGMMA minimal example kernel...\n");
-    wgmma_minimal_kernel<<<gridDim, blockDim>>>(tensor_mapA, tensor_mapB, d_C);
+    wgmma_minimal_kernel<<<gridDim, blockDim>>>(d_A, d_B, d_C);
     
     // Check for kernel launch errors
     cudaError_t err = cudaGetLastError();
