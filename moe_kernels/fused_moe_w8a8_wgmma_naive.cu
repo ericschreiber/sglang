@@ -24,77 +24,22 @@ __device__ void warpgroup_wait() {
     asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
 }
 
-// __device__ static inline uint64_t matrix_descriptor_encode(uint64_t x) { return (((x) & 0x3FFFF) >> 0x4); }
+__device__ static inline uint64_t matrix_descriptor_encode(uint64_t x) { return (((x) & 0x3FFFF) >> 0x4); }
 
-// __device__ uint64_t make_smem_desc(fp8* ptr) {
-//     // https://docs.nvidia.com/cuda/parallel-thread-execution/#asynchronous-warpgroup-level-matrix-shared-memory-layout-matrix-descriptor
-//     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-//     uint64_t desc = 0x0000000000000000;
-//     desc |= matrix_descriptor_encode(addr);
-//     desc |= matrix_descriptor_encode((uint64_t)16) << 16; // Either 16 or 32
-//     desc |= matrix_descriptor_encode((uint64_t)256) << 32; // 8*32; 8 rows times 32 cols times 1 byte
-//     // desc |= 1llu << 62; // 128B swizzle // No swizzle
-//     return desc;
-//   }
-
-__device__ static inline uint64_t matrix_descriptor_encode_uint32(uint32_t x) {
-    // matrix-descriptor-encode(x) = (x & 0x3FFFF) >> 4
-    // result fits in 14 bits.
-    return (uint64_t)((x & 0x3FFFFu) >> 4);
-}
-
-__device__ uint64_t make_smem_desc(const void* ptr, uint32_t leading_dim_bytes, uint32_t stride_dim_bytes) {
-    // ptr must be a shared-memory address (use __cvta_generic_to_shared before calling)
+__device__ uint64_t make_smem_desc(fp8* ptr, int leading_dim_bytes, int stride_dim_bytes) {
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-    // Must be 16-byte aligned (doc requirement)
-    // Build descriptor according to Table 40 in PTX docs:
-    // bits  0..13   : matrix-descriptor-encode(Matrix start address)
-    // bits 16..29   : matrix-descriptor-encode(Leading dimension byte offset relative) OR absolute addr encoded
-    // bits 32..45   : matrix-descriptor-encode(Stride dimension byte offset)
-    // bits 46..48   : fixed constant 0b001
-    // bits 49..51   : matrix base offset (use 0)
-    // bit  52      : leading-dim stride mode (0 = relative offset)
-    // bits 53..60  : fixed constant (as in doc)
-    // bits 61..63  : swizzle (0 = no swizzle)
-
-    uint64_t desc = 0;
-
-    // encoded start address in bits 0..13
-    desc |= (matrix_descriptor_encode_uint32(addr) & 0x3FFFULL) << 0; // bits 0..13
-
-    // encoded leading-dim in bits 16..29
-    desc |= (matrix_descriptor_encode_uint32(leading_dim_bytes) & 0x3FFFULL) << 16;
-
-    // encoded stride-dim in bits 32..45
-    desc |= (matrix_descriptor_encode_uint32(stride_dim_bytes) & 0x3FFFULL) << 32;
-
-    // fixed constant 0b001 in bits 46..48 (doc)
-    desc |= (uint64_t)(0x1) << 46;
-
-    // matrix base offset (bits 49..51) -> keep 0 for canonical start
-    // leading dimension stride mode bit (bit 52): 0 => relative byte offset (we use relative)
-    // fixed constant value occupying bits 53..60: doc shows a fixed constant here, set to the documented constant.
-    // The PTX doc shows this as "Fixed constant value of 0xb00000000" in the table; implementations typically set the 8-bit constant field to 0xB0 (shifted to bits 53..60).
-    // Set bits 53..60 to 0xB0 (this matches other implementations / examples).
-    desc |= (uint64_t)(0xB0ULL) << 53;
-
-    // swizzle bits 61..63 = 0 (no swizzle)
-    // done (zero by default)
-
+    uint64_t desc = 0x0000000000000000;
+    desc |= matrix_descriptor_encode(addr);
+    desc |= matrix_descriptor_encode((uint64_t)leading_dim_bytes) << 16;
+    desc |= matrix_descriptor_encode((uint64_t)stride_dim_bytes) << 32;
+    // desc |= 1llu << 62; // 128B swizzle
     return desc;
-}
+  }
 
 template<int ScaleD, int ScaleA, int ScaleB>
 __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
-    // d[row][col][0, 1]
-    // uint64_t desc_a = make_smem_desc(&sA[0]);
-    // uint64_t desc_b = make_smem_desc(&sB[0]);
-    // assert(sA & 0xF == 0);
-    // assert(sB & 0xF == 0);
-    // uint64_t desc_a = make_smem_desc(sA, 32, 256);  // A: stride_dim_bytes = 8 * leading_dim_bytes = 8 * 32 = 256 bytes.
-    // uint64_t desc_b = make_smem_desc(sB, 32, 256);   // B: 16×32 (stored as [N][K])
-    uint64_t desc_a = make_smem_desc(sA, 0, 0);
-    uint64_t desc_b = make_smem_desc(sB, 0, 0);
+    uint64_t desc_a = make_smem_desc(sA, 1024, 128);
+    uint64_t desc_b = make_smem_desc(sB, 128, 128);
     asm volatile(
         "{\n"
         "wgmma.mma_async.sync.aligned.m64n16k32.f32.e4m3.e4m3 "
@@ -175,25 +120,52 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
         __shared__ alignas(128) fp8 s_wT[BN][BK];
         for(int k = 0; k < block_shape[0]; k += BK)
         {   
-            // Load x to shared memory
-            for (int i = 0; i < BM/4; i++){
-                // sorted_token_ids[warpM*BM + (lane_id>>2)] / top_k;
-                int token_src = sorted_token_ids[warpM*BM + i] / top_k;
-                if (token_src < M)
-                {
-                    s_x[warp_idx*16+i][lane_id] = reinterpret_cast<const fp8*>(x + token_src*K + k + b_off)[lane_id];
-                }
-                else{
-                    s_x[warp_idx*16+i][lane_id] = fp8(0);
+            // Load x to shared memory with proper WGMMA striding
+            for (int i = threadIdx.x; i < BM * BK; i += blockDim.x) {
+                int row = i / BK;  // Which row in the BM x BK tile
+                int col = i % BK;  // Which column in the BM x BK tile
+                
+                // Apply WGMMA striding pattern
+                int m0 = row % 8;
+                int m1 = row / 8;
+                int k0 = col % 16;
+                int k1 = col / 16;
+                int ofs = m0 * 16 + m1 * 128 + k0 + k1 * 1024;
+                
+                int sw_row = ofs / BK;
+                int sw_col = ofs % BK;
+                
+                // Get the token source for this row
+                int token_src = sorted_token_ids[warpM*BM + row] / top_k;
+                
+                if (token_src < M) {
+                    s_x[sw_row][sw_col] = reinterpret_cast<const fp8*>(x + token_src*K + k + b_off + col)[0];
+                } else {
+                    s_x[sw_row][sw_col] = fp8(0);
                 }
             }
             // Load w to shared memory
-            if (warp_idx == 0){
-                for (int i = 0; i < BN; i++){
-                    int wT_row = warpN * BN + i;
-                    int wT_col = k + b_off;
-                    s_wT[i][lane_id] = reinterpret_cast<const fp8*>(exp_w + wT_row*K + wT_col)[lane_id];
-                }
+            // if (warp_idx == 0){
+            //     for (int i = 0; i < BN; i++){
+            //         int wT_row = warpN * BN + i;
+            //         int wT_col = k + b_off;
+            //         s_wT[i][lane_id] = reinterpret_cast<const fp8*>(exp_w + wT_row*K + wT_col)[lane_id];
+            //     }
+            // }
+            for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
+                int row = i / 32;
+                int col = i % 32;
+        
+                int m0 = row % 8;
+                int m1 = row / 8;
+                int k0 = col % 16;
+                int k1 = col / 16;
+                int ofs = m0 * 16 + m1 * 128 + k0 + k1 * 256;
+        
+                int sw_row = ofs / 32;
+                int sw_col = ofs % 32;
+        
+                s_wT[sw_row][sw_col] = reinterpret_cast<const fp8*>(exp_w + w_row*K + k + b_off + col)[lane_id];
             }
 
             __syncthreads();

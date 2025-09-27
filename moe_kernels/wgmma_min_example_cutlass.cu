@@ -1,13 +1,7 @@
 #include <cutlass/cutlass.h>
-#include <cutlass/arch/wgmma.h>
 #include <cutlass/layout/matrix.h>
 #include <cutlass/numeric_types.h>
-#include <cutlass/gemm/collective/builders/sm90.hpp>
 #include <cutlass/gemm/kernel/gemm_universal.hpp>
-#include <cutlass/util/device_memory.h>
-#include <cutlass/util/host_tensor.h>
-#include <cutlass/util/reference/host/gemm.h>
-#include <cutlass/util/tensor_view_io.h>
 
 using ElementA = cutlass::float_e4m3_t;  // FP8 E4M3
 using ElementB = cutlass::float_e4m3_t;  // FP8 E4M3

@@ -19,7 +19,7 @@ $(TARGET2): $(SOURCE2)
 	$(NVCC) $(CFLAGS) -o $(TARGET2) $(SOURCE2)
 
 $(TARGET3): $(SOURCE3)
-	$(NVCC) $(CFLAGS) -o $(TARGET3) $(SOURCE3) -I$(CUTLASS_PATH)/include -I$(CUTLASS_PATH)/include/cutlass
+	$(NVCC) $(CFLAGS) -o $(TARGET3) $(SOURCE3) -I$(CUTLASS_PATH)/include 
 
 clean:
 	rm -f $(TARGET) $(TARGET2) $(TARGET3)
