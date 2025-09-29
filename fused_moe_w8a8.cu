@@ -76,6 +76,9 @@ __global__ void fused_moe_w8a8_kernel(
             if (token_src[0] < M)
             {
                 tile_x[0] = reinterpret_cast<const uint32_t*>(x + token_src[0]*K + k + b_off)[lane_id%4];
+                if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                    printf("tile_x[0]: %f\n", float(reinterpret_cast<fp8*>(&tile_x[0])[0]));
+                }
                 tile_x[2] = reinterpret_cast<const uint32_t*>(x + token_src[0]*K + k + b_off + 16)[lane_id%4];
             }
             if (token_src[1] < M)
@@ -86,11 +89,21 @@ __global__ void fused_moe_w8a8_kernel(
 
             const int w_col = (lane_id%4)*4 + k + b_off;
             tile_w[0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col);
+            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                printf("tile_w[0]: %f\n", float(reinterpret_cast<fp8*>(&tile_w[0])[0]));
+            }
             tile_w[1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 16);
             asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
                     : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
                     : "r"(tile_x[0]), "r"(tile_x[1]), "r"(tile_x[2]), "r"(tile_x[3]), "r"(tile_w[0]), "r"(tile_w[1]));
-
+            
+            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                printf("threadIdx.x == 0, acc correct: %f, %f, %f, %f\n", acc[0], acc[1], acc[2], acc[3]);
+            }
+            if (threadIdx.x == 1 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                printf("threadIdx.x == 1, acc correct: %f, %f, %f, %f\n", acc[0], acc[1], acc[2], acc[3]);
+            }
+            
             // fp8 tmp[4];
             // for (int i = 0; i<4; i++)
             // {

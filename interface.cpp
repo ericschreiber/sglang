@@ -70,7 +70,7 @@ void fused_moe_w8a8_prefetching(MOE_ARGS);
 void fused_moe_w8a8_smem(MOE_ARGS);
 void fused_moe_w8a8_unrollK(MOE_ARGS);
 
-void fused_moe_w8a8_wgmma_naive(MOE_ARGS);
+void fused_moe_w8a8_wgmma_naive_v2(MOE_ARGS);
 void fused_moe_w8a8_wgmma_tma_naive(MOE_ARGS_EXTENDED);
 
 torch::Tensor fused_moe_launcher(
@@ -85,7 +85,10 @@ torch::Tensor fused_moe_launcher(
         int kernel_variant
         )
 {
-    // printf("w.size(0) %d, w.size(1) %d, w.size(2) %d\n", w.size(0), w.size(1), w.size(2));
+    printf("w.size(0) %d, w.size(1) %d, w.size(2) %d\n", w.size(0), w.size(1), w.size(2));
+    printf("sorted_token_ids.size(0) %d\n", sorted_token_ids.size(0));
+    printf("expert_ids.size(0): %d\n", expert_ids.size(0));
+    printf("num_tokens_post_padded.size(0): %d\n", num_tokens_post_padded.size(0));
     auto options = torch::TensorOptions().dtype(at::ScalarType::BFloat16).device(w.device());
     torch::Tensor out = torch::empty({x.size(0) * top_k, w.size(1)}, options);
     switch (kernel_variant)
@@ -103,7 +106,7 @@ torch::Tensor fused_moe_launcher(
             fused_moe_w8a8_unrollK(MOE_CALL);
             break;
         case 4:
-            fused_moe_w8a8_wgmma_naive(MOE_CALL);
+            fused_moe_w8a8_wgmma_naive_v2(MOE_CALL);
             break;
         case 5:
             fused_moe_w8a8_wgmma_tma_naive(MOE_CALL_EXTENDED);
