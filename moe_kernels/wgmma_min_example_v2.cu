@@ -50,7 +50,7 @@ __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
     // uint64_t desc_b = make_smem_desc(sB, 32, 256);
 
     uint64_t desc_a = make_smem_desc(sA, 1024, 128);
-    uint64_t desc_b = make_smem_desc(sB, 128, 128);
+    uint64_t desc_b = make_smem_desc(sB, 256, 128);
 
     // uint64_t desc_a = make_smem_desc(sA, 128, 256);
     // uint64_t desc_b = make_smem_desc(sB, 128, 256);
@@ -206,14 +206,6 @@ __global__ void wgmma_minimal_kernel(
             int col1 = 8 + (thread_in_warp_idx % 4) * 2;
             
             // // Write the 8 accumulator values
-            // if (base_idx < 64 * 16) C_global[base_idx] = acc[0][0][0];
-            // if (base_idx + 1 < 64 * 16) C_global[base_idx + 1] = acc[0][0][1];
-            // if (base_idx + 2 < 64 * 16) C_global[base_idx + 2] = acc[1][0][0];
-            // if (base_idx + 3 < 64 * 16) C_global[base_idx + 3] = acc[1][0][1];
-            // if (base_idx + 4 < 64 * 16) C_global[base_idx + 4] = acc[0][1][0];
-            // if (base_idx + 5 < 64 * 16) C_global[base_idx + 5] = acc[0][1][1];
-            // if (base_idx + 6 < 64 * 16) C_global[base_idx + 6] = acc[1][1][0];
-            // if (base_idx + 7 < 64 * 16) C_global[base_idx + 7] = acc[1][1][1];
             C_global[warp_group_off + row0 + col0] = acc[0][0][0];
             C_global[warp_group_off + row0 + col0 + 1] = acc[0][0][1];
             C_global[warp_group_off + row1 + col0] = acc[1][0][0];
@@ -239,21 +231,27 @@ void run_wgmma_minimal_example() {
     // Initialize matrices with simple values
     for (int i = 0; i < M * K; i++) {
         if (i%K < 4 && i<2*K){
-            // h_A[i] = fp8(i%K);
-            h_A[i] = fp8(1);
+            h_A[i] = fp8(i%K);
+            // h_A[i] = fp8(1);
         } else {
-            h_A[i] = fp8(1);
-            // h_A[i] = fp8(0);
+            // h_A[i] = fp8(1);
+            h_A[i] = fp8(0);
         }
     }
     for (int i = 0; i < N * K; i++) {
         if (i%K < 4 && i<2*K){
-            h_B[i] = fp8(i%K);
-            // h_B[i] = fp8(1);
+            // h_B[i] = fp8(i%K);
+            h_B[i] = fp8(1);
         } else {
-            // h_B[i] = fp8(1);
-            h_B[i] = fp8(0);
+            h_B[i] = fp8(1);
+            // h_B[i] = fp8(0);
         }
+        // // Make an identity matrix
+        // if (i%K == i/K) {
+        //     h_B[i] = fp8(1);
+        // } else {
+        //     h_B[i] = fp8(0);
+        // }
     }
 
 

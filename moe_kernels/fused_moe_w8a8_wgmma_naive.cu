@@ -39,18 +39,17 @@ __device__ uint64_t make_smem_desc(fp8* ptr, int leading_dim_bytes, int stride_d
 template<int ScaleD, int ScaleA, int ScaleB>
 __device__ void wgmmaM64N16K32(float d[2][2][2], fp8* sA, fp8* sB) {
     uint64_t desc_a = make_smem_desc(sA, 1024, 128);
-    uint64_t desc_b = make_smem_desc(sB, 128, 128);
+    uint64_t desc_b = make_smem_desc(sB, 256, 128);
     asm volatile(
-        "{\n"
         "wgmma.mma_async.sync.aligned.m64n16k32.f32.e4m3.e4m3 "
-        "{%0, %1, %2, %3, %4, %5, %6, %7},"
-        " %8, %9,"
-        " %10, %11, %12;\n"
-        "}\n"
-        : "+f"(d[0][0][0]), "+f"(d[0][0][1]), "+f"(d[1][0][0]), "+f"(d[1][0][1]), "+f"(d[0][1][0]), "+f"(d[0][1][1]), "+f"(d[1][1][0]), "+f"(d[1][1][1])
+        "{%0, %1, %2, %3, %4, %5, %6, %7}, "
+        "%8, %9, "
+        "%10, %11, %12;\n"
+        : "+f"(d[0][0][0]), "+f"(d[0][0][1]), "+f"(d[1][0][0]), "+f"(d[1][0][1]), 
+        "+f"(d[0][1][0]), "+f"(d[0][1][1]), "+f"(d[1][1][0]), "+f"(d[1][1][1])
         : "l"(desc_a), "l"(desc_b), 
         "n"(int32_t(ScaleD)), "n"(int32_t(ScaleA)), "n"(int32_t(ScaleB)));
-        }
+}
 
 template <int BM, int BK, int BN>
 __global__ void fused_moe_w8a8_wgmma_naive_kernel(
@@ -69,8 +68,8 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
         )
 {
     const int32_t warp_idx = threadIdx.x / 32;
-    const int32_t warpM = (blockIdx.x*blockDim.x+threadIdx.x)/32;
-    const int32_t warpN = blockIdx.y*blockDim.y+threadIdx.y;
+    const int32_t warpN = (blockIdx.x*blockDim.x+threadIdx.x) / 32;
+    const int32_t warpM = blockIdx.y*blockDim.y+threadIdx.y;
     //TODO should not be hardcoded
     constexpr int block_shape[2] = {128, 128};
 
@@ -92,6 +91,11 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
     int token_src[2];
     token_src[0] = sorted_token_ids[warpM*BM + (lane_id>>2)] / top_k;
     token_src[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8] / top_k;
+
+    if (token_src[0] < 0 || token_src[1] < 0) {
+        printf("BOUNDS ERROR: token_src[0]=%d, token_src[1]=%d\n", token_src[0], token_src[1]);
+        return;
+    }
 
     float f_acc[2][2][2] = {0.f};
     // bool p = blockIdx.x == 1 && blockIdx.y == 5 && threadIdx.x == 0;
@@ -124,7 +128,7 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
             for (int i = threadIdx.x; i < BM * BK; i += blockDim.x) {
                 int row = i / BK;  // Which row in the BM x BK tile
                 int col = i % BK;  // Which column in the BM x BK tile
-                
+
                 // Apply WGMMA striding pattern
                 int m0 = row % 8;
                 int m1 = row / 8;
@@ -134,24 +138,20 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
                 
                 int sw_row = ofs / BK;
                 int sw_col = ofs % BK;
-                
-                // Get the token source for this row
-                int token_src = sorted_token_ids[warpM*BM + row] / top_k;
-                
-                if (token_src < M) {
-                    s_x[sw_row][sw_col] = reinterpret_cast<const fp8*>(x + token_src*K + k + b_off + col)[0];
-                } else {
+
+
+                if (row >= M) {
                     s_x[sw_row][sw_col] = fp8(0);
                 }
+                else {
+                    // Get the token source for this row
+                    int token_src_local = sorted_token_ids[warpM*BM + row] / top_k;
+
+                    if (token_src_local < M) {
+                        s_x[sw_row][sw_col] = reinterpret_cast<const fp8*>(x + token_src_local*K + k + b_off + col)[0];
+                    }
+                }
             }
-            // Load w to shared memory
-            // if (warp_idx == 0){
-            //     for (int i = 0; i < BN; i++){
-            //         int wT_row = warpN * BN + i;
-            //         int wT_col = k + b_off;
-            //         s_wT[i][lane_id] = reinterpret_cast<const fp8*>(exp_w + wT_row*K + wT_col)[lane_id];
-            //     }
-            // }
             for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
                 int row = i / 32;
                 int col = i % 32;
@@ -165,20 +165,20 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
                 int sw_row = ofs / 32;
                 int sw_col = ofs % 32;
         
-                s_wT[sw_row][sw_col] = reinterpret_cast<const fp8*>(exp_w + w_row*K + k + b_off + col)[lane_id];
+                s_wT[sw_row][sw_col] = reinterpret_cast<const fp8*>(exp_w + w_row*K + k + b_off + col)[0];
             }
 
             __syncthreads();
 
-            // const int w_col = (lane_id%4)*4 + k + b_off;
-            // tile_w[0] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col);
-            // tile_w[1] = *reinterpret_cast<const uint32_t*>(exp_w + w_row*K + w_col + 16);
             float acc_local[2][2][2] = {0.f}; // Check if this is necessary
 
-            warpgroup_arrive();
-            wgmmaM64N16K32<1, 1, 1>(acc_local, &s_x[0][0], &s_wT[0][0]);
-            warpgroup_commit_batch();
-            warpgroup_wait<0>();
+            if (warp_idx < 4) {
+                warpgroup_arrive();
+                wgmmaM64N16K32<1, 1, 1>(acc_local, &s_x[0][0], &s_wT[0][0]);
+                warpgroup_commit_batch();
+                warpgroup_wait<0>();
+            }
+
 
             acc[0][0][0] += acc_local[0][0][0];
             acc[0][0][1] += acc_local[0][0][1];
@@ -189,7 +189,7 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel(
             acc[1][1][0] += acc_local[1][1][0];
             acc[1][1][1] += acc_local[1][1][1];
         }
-
+        __syncthreads();
 
         if (token_src[0] < M)
         {
@@ -240,8 +240,8 @@ void fused_moe_w8a8_wgmma_naive(
     // constexpr int num_warps_y = 1;
     // dim3 dimBlock(32*num_warps_x_WGMMA, num_warps_y, 1);
     dim3 dimBlock(128, 1, 1); // One warp group per block
-    // dim3 dimGrid(std::ceil((float)sorted_num/(BM*num_warps_x_WGMMA)), std::ceil((float)N/(BN*num_warps_y)),1);
-    dim3 dimGrid(std::ceil((float)sorted_num/BM), std::ceil((float)N/BN), 1);
+    dim3 dimGrid(std::ceil((float)N/(BN)), std::ceil((float)sorted_num/(BM)),1);
+
     fused_moe_w8a8_wgmma_naive_kernel<BM, BK, BN><<<dimGrid, dimBlock>>>(
             x,
             x_scale,
@@ -256,4 +256,16 @@ void fused_moe_w8a8_wgmma_naive(
             K,
             N
             );
+
+     // Check for kernel launch errors
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Kernel launch error: %s\n", cudaGetErrorString(err));
+     }
+     
+     // Wait for kernel to complete
+     err = cudaDeviceSynchronize();
+     if (err != cudaSuccess) {
+         fprintf(stderr, "Kernel execution error: %s\n", cudaGetErrorString(err));
+     }
 }

@@ -32,7 +32,7 @@ my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         ], 
                                         extra_cuda_cflags=[
                                             "-lineinfo",
-                                            "-gencode=arch=compute_90a,code=sm_90a" # Need this for WGMMA
+                                            # "-gencode=arch=compute_90a,code=sm_90a" # Need this for WGMMA
                                         ],
                                         extra_ldflags=['-lcuda', '-lcudart'],)
 
@@ -89,6 +89,10 @@ def run_moe(topk_ids, eps=1e-10):
     # print(sorted_token_ids[:num_tokens_post_padded[0]])
     # print(expert_ids)
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, KERNEL_VARIANT)
+
+    # Show the first 8x8 tile of out
+    # print(f"First 8x8 tile of out: {out[:8, :8]}")
+    # print(f"First 8x8 tile of out_triton_up: {out_triton_up.reshape(out.shape)[:8, :8]}")
 
     # idx = torch.isclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol).logical_not()
     # if not torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol):
