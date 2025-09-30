@@ -69,23 +69,41 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
 {
     const int32_t warp_idx = threadIdx.x / 32;
     const int32_t lane_idx = threadIdx.x % 32;
-    const int32_t warp_group_N = (blockIdx.x*blockDim.x+threadIdx.x) / 32; // warps 0-3 for each warp group
+    const int32_t warp_group_N = blockIdx.x; // Each block handles one N tile
     const int32_t warp_group_M = blockIdx.y; // y is only 1D
 
     if(warp_group_M * BM >= num_tokens_post_padded[0])
         return;
-    
+
     //TODO should not be hardcoded
     constexpr int block_shape[2] = {128, 128};
-    
+
     const int exp_idx = expert_ids[warp_group_M];
     const fp8* exp_w = w + exp_idx * K * N;
-    const int w_row = warp_group_N * BN + (lane_idx>>2);
+
+    // For WGMMA m64n16 output mapping (based on wgmma_min_example_v2.cu):
+    // Each warp handles 16 consecutive M-rows
+    // Within each warp: lanes 0-3, 4-7, 8-11, 12-15, ... all handle the same row
+    // lane/4 determines which row (within the warp's 16-row region, but spaced by row_length)
+    // lane%4 determines which column pair (0-1, 2-3, 4-5, 6-7)
+
+    const int base_m_row = warp_idx * 16; // Each warp handles 16 rows
+    const int lane_row_offset = (lane_idx / 4); // 0-7 for lanes 0-31
+    const int lane_col_pair = (lane_idx % 4); // 0-3
+
+    // For weight scale indexing: use the base N column of this tile
+    const int w_row_for_scale = warp_group_N * BN;
+
+    // Two rows per thread: one at lane_row_offset, another at lane_row_offset + 8
+    const int row0_in_tile = lane_row_offset;
+    const int row1_in_tile = 8 + lane_row_offset;
 
     int token_dest[2];
-    int idx = warp_group_M*BM + warp_idx * 16 + (lane_idx>>2);
-    token_dest[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)];
-    token_dest[1] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2) + 8];
+    int token_idx0 = warp_group_M*BM + base_m_row + row0_in_tile;
+    int token_idx1 = warp_group_M*BM + base_m_row + row1_in_tile;
+
+    token_dest[0] = (token_idx0 < num_tokens_post_padded[0]) ? sorted_token_ids[token_idx0] : M * top_k;  // Use out-of-bounds value
+    token_dest[1] = (token_idx1 < num_tokens_post_padded[0]) ? sorted_token_ids[token_idx1] : M * top_k;
     // if (idx < num_tokens_post_padded[0]) {
     //     token_dest[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)];
     // } else {
@@ -97,18 +115,10 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
     //     token_dest[1] = M;
     // }
 
-    if (warp_group_N == 15 && lane_idx == 0) {
-        printf("warp_group_N: %d, lane_idx: %d, ThreadIdx.x: %d, BlockIdx.x: %d, BlockIdx.y: %d, token_dest[0]: %d, token_dest[1]: %d\n", warp_group_N, lane_idx, threadIdx.x, blockIdx.x, blockIdx.y, token_dest[0], token_dest[1]);
-    }
-
-    if (token_dest[0] == 1 || token_dest[1] == 1) {
-        printf("token_dest[0]: %d, token_dest[1]: %d, threadIdx.x: %d, blockIdx.x: %d, blockIdx.y: %d, threadIdx.y: %d, block: %d, k: %d\n",
-                token_dest[0], token_dest[1], threadIdx.x, blockIdx.x, blockIdx.y, threadIdx.y);
-    }
 
     int token_src[2];
-    token_src[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)] / top_k;
-    token_src[1] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2) + 8] / top_k;
+    token_src[0] = token_dest[0] / top_k;
+    token_src[1] = token_dest[1] / top_k;
     // if (idx < num_tokens_post_padded[0]) {
     //     token_src[0] = token_dest[0] / top_k;
     // } else {
@@ -138,7 +148,7 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
             scale_x[1] = x_scale[(token_src[1])*scale_cols_x + block];
         }
 
-        float scale_w = w_scale[exp_idx * scale_rows_w * scale_cols_w + (w_row/block_shape[1])*scale_cols_w + block];
+        float scale_w = w_scale[exp_idx * scale_rows_w * scale_cols_w + (w_row_for_scale/block_shape[1])*scale_cols_w + block];
 
         int b_off = block * block_shape[0];
         float acc[2][2][2] = {0.f};
@@ -161,45 +171,44 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
                 int sw_row = ofs / BK;
                 int sw_col = ofs % BK;
 
-                // if (warp_group_M*BM + row >= num_tokens_post_padded[0]) {
-                //     s_x[sw_row][sw_col] = fp8(0);
-                // }
-                // else {
-                // Get the token source for this row
-                int token_src_local = sorted_token_ids[warp_group_M*BM + row] / top_k;
-
-                if (token_src_local < M) {
-                    s_x[sw_row][sw_col] = x[token_src_local*K + k + b_off + col];
-                }
-                else {
+                // Check if this row is within bounds
+                if (warp_group_M*BM + row >= num_tokens_post_padded[0]) {
                     s_x[sw_row][sw_col] = fp8(0);
                 }
-                // }
-            }
-            __syncthreads();
-            // Print s_x
-            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
-                for (int i = 0; i < BM; i++) {
-                    for (int j = 0; j < BK; j++) {
-                        printf("s_x[%d][%d]: %f", i, j, float(s_x[i][j]));
+                else {
+                    // Get the token source for this row
+                    int token_src_local = sorted_token_ids[warp_group_M*BM + row] / top_k;
+
+                    if (token_src_local < M) {
+                        s_x[sw_row][sw_col] = x[token_src_local*K + k + b_off + col];
                     }
-                    printf("\n");
+                    else {
+                        s_x[sw_row][sw_col] = fp8(0);
+                    }
                 }
             }
+            __syncthreads();
+
             for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
                 int row = i / 32;
                 int col = i % 32;
-        
+
                 int m0 = row % 8;
                 int m1 = row / 8;
                 int k0 = col % 16;
                 int k1 = col / 16;
                 int ofs = m0 * 16 + m1 * 128 + k0 + k1 * 256;
-        
+
                 int sw_row = ofs / 32;
                 int sw_col = ofs % 32;
-        
-                s_wT[sw_row][sw_col] = exp_w[row*K + k + b_off + col];
+
+                // Load weight for the N-tile this block is responsible for
+                int weight_row = warp_group_N * BN + row;  // Global row in weight matrix
+                if (weight_row < N) {
+                    s_wT[sw_row][sw_col] = exp_w[weight_row*K + k + b_off + col];
+                } else {
+                    s_wT[sw_row][sw_col] = fp8(0);
+                }
             }
             __syncthreads();
             
@@ -210,10 +219,6 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
             warpgroup_commit_batch();
             warpgroup_wait<0>();
             __syncthreads();
-            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 1 && threadIdx.y == 0 && block == 0 && k == 0) {
-                printf("acc_local: %f, %f, %f, %f\n", acc_local[0][0][0], acc_local[0][0][1], acc_local[0][1][0], acc_local[0][1][1]);
-                printf("acc_local: %f, %f, %f, %f\n", acc_local[1][0][0], acc_local[1][0][1], acc_local[1][1][0], acc_local[1][1][1]);
-            }
 
             // Check if this is necessary
             acc[0][0][0] += acc_local[0][0][0];
@@ -242,18 +247,26 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
             f_acc[1][1][1] += scale_x[1] * scale_w * acc[1][1][1];
         }
     }
+    // Output layout for WGMMA m64n16 (from wgmma_min_example_v2.cu):
+    // acc[row_part][col_part][value] where:
+    // - row_part: 0 for row0, 1 for row1 (row1 = row0 + 8)
+    // - col_part: 0 for columns 0-7, 1 for columns 8-15
+    // - value: 0-1 for two consecutive values
+
+    const int col0 = warp_group_N * BN + (lane_col_pair * 2); // Columns 0, 2, 4, 6
+    const int col1 = warp_group_N * BN + 8 + (lane_col_pair * 2); // Columns 8, 10, 12, 14
+
     if (token_src[0] < M)
     {
-        if (token_dest[0] == 0){
-            printf("warp_group_N: %d, lane_idx: %d, ThreadIdx.x: %d, BlockIdx.x: %d, BlockIdx.y: %d\n", warp_group_N, lane_idx, threadIdx.x, blockIdx.x, blockIdx.y);
-        }
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warp_group_N * BN + (lane_idx%4)*2) = __nv_bfloat162(f_acc[0][0][0], f_acc[0][0][1]);;
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warp_group_N * BN + (lane_idx%4)*2 + 8) = __nv_bfloat162(f_acc[0][1][0], f_acc[0][1][1]);;
+        // First M-row: write columns col0, col0+1, col1, col1+1
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + col0) = __nv_bfloat162(__float2bfloat16(f_acc[0][0][0]), __float2bfloat16(f_acc[0][0][1]));
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + col1) = __nv_bfloat162(__float2bfloat16(f_acc[0][1][0]), __float2bfloat16(f_acc[0][1][1]));
     }
     if (token_src[1] < M)
     {
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + warp_group_N * BN + (lane_idx%4)*2) = __nv_bfloat162(f_acc[1][0][0], f_acc[1][0][1]);;
-        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + warp_group_N * BN + (lane_idx%4)*2 + 8) = __nv_bfloat162(f_acc[1][1][0], f_acc[1][1][1]);;
+        // Second M-row: write columns col0, col0+1, col1, col1+1
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + col0) = __nv_bfloat162(__float2bfloat16(f_acc[1][0][0]), __float2bfloat16(f_acc[1][0][1]));
+        *reinterpret_cast<__nv_bfloat162*>(out + token_dest[1]*N + col1) = __nv_bfloat162(__float2bfloat16(f_acc[1][1][0]), __float2bfloat16(f_acc[1][1][1]));
     }
 }
 

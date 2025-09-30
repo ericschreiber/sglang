@@ -86,24 +86,42 @@ def run_moe(topk_ids, eps=1e-10):
                             True, 1, config, compute_type, True, False, False, False, False, block_shape)
     moe_sum_reduce_torch_compile(out_triton_down.view(*out_triton_down.shape), out_triton, moe_config.routed_scaling_factor)
 
+    # TODO: change hardcoded block size to kernel block size. (64, 16, ...)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 64, n_experts)
     # print(sorted_token_ids[:num_tokens_post_padded[0]])
     # print(expert_ids)
     # print(f"Top 64x32 of x_q: {x_q[:64, :32]}")
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, KERNEL_VARIANT)
 
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
-    out_compare = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, 0)
+    # sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
+    # out_compare = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, 0)
 
-    # Show the first 8x8 tile of out
-    print(f"First 8x8 tile of out: {out[:8, :8]}")
-    print(f"First 8x8 tile of out_compare: {out_compare[:8, :8]}")
-    print(f"First 8x8 tile of out_triton_up: {out_triton_up.reshape(out.shape)[:8, :8]}")
+    # sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 64, n_experts)
+    # # Show the first 8x8 tile of out
+    # print(f"First 8x8 tile of out: {out[-8:, :8]}")
+    # print(f"First 8x8 tile of out_compare: {out_compare[-8:, :8]}")
+    # print(f"First 8x8 tile of out_triton_up: {out_triton_up.reshape(out.shape)[:8, :8]}")
+    # print(f"out[24, 0] in out_compare: {out[24, 0] in out_compare}")
+    # print(f"out[24, 0] position in out_compare: {torch.where(out_compare == out[24, 0])}")
+    # print(f"out[25, 0] position in out_compare: {torch.where(out_compare == out[25, 0])}")
+    # print(f"out[26, 0] position in out_compare: {torch.where(out_compare == out[26, 0])}")
+    # print(f"out[27, 0] position in out_compare: {torch.where(out_compare == out[27, 0])}")
+    # print(f"out[28, 0] position in out_compare: {torch.where(out_compare == out[28, 0])}")
+    # print(f"out[29, 0] position in out_compare: {torch.where(out_compare == out[29, 0])}")
+    # print(f"out[30, 0] position in out_compare: {torch.where(out_compare == out[30, 0])}")
+    # print(f"out[31, 0] position in out_compare: {torch.where(out_compare == out[31, 0])}")
+    # print(f"out[1,0] position in out_compare: {torch.where(out_compare == out[1,0])}")
+    # print(f"out[1,1] position in out_compare: {torch.where(out_compare == out[1,1])}")
+    # print(f"out[1,2] position in out_compare: {torch.where(out_compare == out[1,2])}")
+    # print(f"out[1,3] position in out_compare: {torch.where(out_compare == out[1,3])}")
+    # print(f"out[1,4] position in out_compare: {torch.where(out_compare == out[1,4])}")
+    # print(f"out[1,5] position in out_compare: {torch.where(out_compare == out[1,5])}")
+    # print(f"out[1,6] position in out_compare: {torch.where(out_compare == out[1,6])}")
 
     # show rows 0:8 and stride columns in strides 4
     # print(f"Size of out: {out.shape}")
-    print(f"Out: {out}")
-    print(f"Out_compare: {out_compare}")
+    # print(f"Out: {out}")
+    # print(f"Out_compare: {out_compare}")
     # print(f"Out==Out_compare: {torch.allclose(out, out_compare.reshape(out.shape), atol=atol, rtol=rtol)}")
     # print(f"Out==Out_triton_up: {torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol)}")
 
@@ -142,6 +160,26 @@ def run_moe(topk_ids, eps=1e-10):
     # print(out[0:10])
     # print(out_triton_up.reshape(out.shape)[0:10])
 
+    # Check correctness tile-by-tile
+    # print('\nChecking 16-column tiles (v2 vs v0):')
+    # all_match = True
+    # for tile_idx in range(16):
+    #     col_start = tile_idx * 16
+    #     col_end = col_start + 16
+    #     match = torch.allclose(out[:, col_start:col_end], out_compare[:, col_start:col_end], atol=atol, rtol=rtol)
+    #     if not match:
+    #         all_match = False
+    #         max_diff = (out[:, col_start:col_end] - out_compare[:, col_start:col_end]).abs().max()
+    #         print(f'  Tile {tile_idx:2d} (cols {col_start:3d}-{col_end-1:3d}): FAIL (max_diff={max_diff:.3f})')
+    #     else:
+    #         print(f'  Tile {tile_idx:2d} (cols {col_start:3d}-{col_end-1:3d}): PASS')
+
+    # if all_match:
+    #     print('\n✓ All tiles match! Kernel is correct.')
+    # else:
+    #     print('\n✗ Some tiles mismatch.')
+
+    # Original assertion against triton
     assert(torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol))
     diff = torch.abs(out-out_triton_up.reshape(out.shape))
     mean_diff_up = diff.mean()
@@ -175,6 +213,9 @@ def run_moe(topk_ids, eps=1e-10):
     #     print(out[idx][:10])
 
     # TODO swiglu too big stacks too much error
+
+    # print(f"Second out: {out}")
+    # print(f"Second out_compare: {out_compare}")
     assert(torch.allclose(out, out_triton_down.reshape(out.shape), atol=10*atol, rtol=rtol))
     diff = torch.abs(out-out_triton_down.reshape(out.shape))
     mean_diff_down = diff.mean()

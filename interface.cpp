@@ -87,6 +87,7 @@ torch::Tensor fused_moe_launcher(
         )
 {
     // printf("w.size(0) %d, w.size(1) %d, w.size(2) %d\n", w.size(0), w.size(1), w.size(2));
+    // printf("x.size(0) %d, x.size(1) %d\n", x.size(0), x.size(1));
     // printf("sorted_token_ids.size(0) %d\n", sorted_token_ids.size(0));
     // printf("expert_ids.size(0): %d\n", expert_ids.size(0));
     // printf("num_tokens_post_padded.size(0): %d\n", num_tokens_post_padded.size(0));
