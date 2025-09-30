@@ -42,6 +42,12 @@ __global__ void fused_moe_w8a8_kernel(
     int token_dest[2];
     token_dest[0] = sorted_token_ids[warpM*BM + (lane_id>>2)];
     token_dest[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8];
+
+    if (token_dest[0] == 1 || token_dest[1] == 1) {
+        printf("token_dest[0]: %d, token_dest[1]: %d, threadIdx.x: %d, blockIdx.x: %d, blockIdx.y: %d, threadIdx.y: %d, block: %d, k: %d\n",
+                token_dest[0], token_dest[1], threadIdx.x, blockIdx.x, blockIdx.y, threadIdx.y);
+    }
+
     int token_src[2];
     token_src[0] = sorted_token_ids[warpM*BM + (lane_id>>2)] / top_k;
     token_src[1] = sorted_token_ids[warpM*BM + (lane_id>>2) + 8] / top_k;
@@ -79,12 +85,21 @@ __global__ void fused_moe_w8a8_kernel(
                 if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
                     printf("tile_x[0]: %f\n", float(reinterpret_cast<fp8*>(&tile_x[0])[0]));
                 }
+                if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 1 && block == 0 && k == 0) {
+                    printf("row 1, tile_x[0]: %f, tile_x[1]: %f, tile_x[2]: %f, tile_x[3]: %f\n", float(reinterpret_cast<fp8*>(&tile_x[0])[0]), float(reinterpret_cast<fp8*>(&tile_x[0])[1]), float(reinterpret_cast<fp8*>(&tile_x[0])[2]), float(reinterpret_cast<fp8*>(&tile_x[0])[3]));
+                }
                 tile_x[2] = reinterpret_cast<const uint32_t*>(x + token_src[0]*K + k + b_off + 16)[lane_id%4];
             }
             if (token_src[1] < M)
             {
                 tile_x[1] = reinterpret_cast<const uint32_t*>(x + token_src[1]*K + k + b_off)[lane_id%4];
+                if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                    printf("tile_x[1]: %f\n", float(reinterpret_cast<fp8*>(&tile_x[1])[0]));
+                }
                 tile_x[3] = reinterpret_cast<const uint32_t*>(x + token_src[1]*K + k + b_off + 16)[lane_id%4];
+            }
+            if (threadIdx.x == 4 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                printf("threadIdx.x == 4, tile_x[0]: %f\n", float(reinterpret_cast<fp8*>(&tile_x[0])[0]));
             }
 
             const int w_col = (lane_id%4)*4 + k + b_off;
@@ -174,6 +189,9 @@ __global__ void fused_moe_w8a8_kernel(
     }
     if (token_src[0] < M)
     {
+        if (token_dest[0] == 0){
+            printf("warpN: %d, lane_id: %d, ThreadIdx.x: %d, BlockIdx.x: %d, BlockIdx.y: %d\n", warpN, lane_id, threadIdx.x, blockIdx.x, blockIdx.y);
+        }
         *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warpN * BN + (lane_id%4)*2) = __nv_bfloat162(f_acc[0], f_acc[1]);;
         // out[token_dest[0]*N + warpN * BN + (lane_id%4)*2] = f_acc[0];
         // out[token_dest[0]*N + warpN * BN + (lane_id%4)*2 + 1] = f_acc[1];

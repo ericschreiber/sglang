@@ -28,6 +28,7 @@ my_ext = load(name="my_ext", sources = ["interface.cpp",
                                         "./moe_kernels/fused_moe_w8a8_unrollK.cu",
                                         "./moe_kernels/fused_moe_w8a8_wgmma_naive_v2.cu",
                                         "./moe_kernels/fused_moe_w8a8_wgmma_tma_naive.cu",
+                                        # "./moe_kernels/fused_moe_szymon.cu",
                                         # "./moe_kernels/fused_moe_w8a8_regtiling.cu",
                                         ], 
                                         extra_cuda_cflags=[
@@ -85,29 +86,30 @@ def run_moe(topk_ids, eps=1e-10):
                             True, 1, config, compute_type, True, False, False, False, False, block_shape)
     moe_sum_reduce_torch_compile(out_triton_down.view(*out_triton_down.shape), out_triton, moe_config.routed_scaling_factor)
 
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
+    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 64, n_experts)
     # print(sorted_token_ids[:num_tokens_post_padded[0]])
     # print(expert_ids)
-    print(f"Top 64x32 of x_q: {x_q[:64, :32]}")
+    # print(f"Top 64x32 of x_q: {x_q[:64, :32]}")
     out = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, KERNEL_VARIANT)
 
+    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, 16, n_experts)
     out_compare = my_ext.fused_moe_w8a8(x_q, x_scale, w1, w1_scale, sorted_token_ids, expert_ids, num_tokens_post_padded, top_k, 0)
 
     # Show the first 8x8 tile of out
-    # print(f"First 8x8 tile of out: {out[:8, :8]}")
-    # print(f"First 8x8 tile of out_compare: {out_compare[:8, :8]}")
-    # print(f"First 8x8 tile of out_triton_up: {out_triton_up.reshape(out.shape)[:8, :8]}")
+    print(f"First 8x8 tile of out: {out[:8, :8]}")
+    print(f"First 8x8 tile of out_compare: {out_compare[:8, :8]}")
+    print(f"First 8x8 tile of out_triton_up: {out_triton_up.reshape(out.shape)[:8, :8]}")
 
     # show rows 0:8 and stride columns in strides 4
-    print(f"Size of out: {out.shape}")
+    # print(f"Size of out: {out.shape}")
     print(f"Out: {out}")
     print(f"Out_compare: {out_compare}")
-    print(f"Out==Out_compare: {torch.allclose(out, out_compare.reshape(out.shape), atol=atol, rtol=rtol)}")
-    print(f"Out==Out_triton_up: {torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol)}")
+    # print(f"Out==Out_compare: {torch.allclose(out, out_compare.reshape(out.shape), atol=atol, rtol=rtol)}")
+    # print(f"Out==Out_triton_up: {torch.allclose(out, out_triton_up.reshape(out.shape), atol=atol, rtol=rtol)}")
 
-    print(f"Top 64x32 of Out: {out[:64, :32]}")
-    print(f"Top 64x32 of Out_compare: {out_compare[:64, :32]}")
-    print(f"Top 64x32 of Out_triton_up: {out_triton_up.reshape(out.shape)[:64, :32]}")
+    # print(f"Top 64x32 of Out: {out[:64, :32]}")
+    # print(f"Top 64x32 of Out_compare: {out_compare[:64, :32]}")
+    # print(f"Top 64x32 of Out_triton_up: {out_triton_up.reshape(out.shape)[:64, :32]}")
     # print(f"First 8x8*4 strided by 4: {out[0:8, 0:8*4:4]}")
     # print(f"First 8x8*4 strided by 4: {out_compare[0:8, 0:8*4:4]}")
     # print(f"First 8x8*4 strided by 4: {out_triton_up.reshape(out.shape)[0:8, 0:8*4:4]}")

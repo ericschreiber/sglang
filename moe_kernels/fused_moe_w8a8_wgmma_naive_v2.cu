@@ -83,11 +83,42 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
     const int w_row = warp_group_N * BN + (lane_idx>>2);
 
     int token_dest[2];
-    token_dest[0] = sorted_token_ids[warp_group_M*BM + (lane_idx>>2)];
-    token_dest[1] = sorted_token_ids[warp_group_M*BM + (lane_idx>>2) + 8];
+    int idx = warp_group_M*BM + warp_idx * 16 + (lane_idx>>2);
+    token_dest[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)];
+    token_dest[1] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2) + 8];
+    // if (idx < num_tokens_post_padded[0]) {
+    //     token_dest[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)];
+    // } else {
+    //     token_dest[0] = M;
+    // }
+    // if (idx + 8 < num_tokens_post_padded[0]) {
+    //     token_dest[1] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2) + 8];
+    // } else {
+    //     token_dest[1] = M;
+    // }
+
+    if (warp_group_N == 15 && lane_idx == 0) {
+        printf("warp_group_N: %d, lane_idx: %d, ThreadIdx.x: %d, BlockIdx.x: %d, BlockIdx.y: %d, token_dest[0]: %d, token_dest[1]: %d\n", warp_group_N, lane_idx, threadIdx.x, blockIdx.x, blockIdx.y, token_dest[0], token_dest[1]);
+    }
+
+    if (token_dest[0] == 1 || token_dest[1] == 1) {
+        printf("token_dest[0]: %d, token_dest[1]: %d, threadIdx.x: %d, blockIdx.x: %d, blockIdx.y: %d, threadIdx.y: %d, block: %d, k: %d\n",
+                token_dest[0], token_dest[1], threadIdx.x, blockIdx.x, blockIdx.y, threadIdx.y);
+    }
+
     int token_src[2];
-    token_src[0] = sorted_token_ids[warp_group_M*BM + (lane_idx>>2)] / top_k;
-    token_src[1] = sorted_token_ids[warp_group_M*BM + (lane_idx>>2) + 8] / top_k;
+    token_src[0] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2)] / top_k;
+    token_src[1] = sorted_token_ids[warp_group_M*BM + warp_idx * 16 + (lane_idx>>2) + 8] / top_k;
+    // if (idx < num_tokens_post_padded[0]) {
+    //     token_src[0] = token_dest[0] / top_k;
+    // } else {
+    //     token_src[0] = M;
+    // }
+    // if (idx + 8 < num_tokens_post_padded[0]) {
+    //     token_src[1] = token_dest[1] / top_k;
+    // } else {
+    //     token_src[1] = M;
+    // }
 
     float f_acc[2][2][2] = {0.f};
 
@@ -130,23 +161,31 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
                 int sw_row = ofs / BK;
                 int sw_col = ofs % BK;
 
+                // if (warp_group_M*BM + row >= num_tokens_post_padded[0]) {
+                //     s_x[sw_row][sw_col] = fp8(0);
+                // }
+                // else {
+                // Get the token source for this row
+                int token_src_local = sorted_token_ids[warp_group_M*BM + row] / top_k;
 
-                if (row >= M) {
-                    s_x[sw_row][sw_col] = fp8(0);
+                if (token_src_local < M) {
+                    s_x[sw_row][sw_col] = x[token_src_local*K + k + b_off + col];
                 }
                 else {
-                    // Get the token source for this row
-                    int token_src_local = sorted_token_ids[warp_group_M*BM + row] / top_k;
-
-                    if (token_src_local < M) {
-                        s_x[sw_row][sw_col] = x[token_src_local*K + k + b_off + col];
-                    }
-                    else {
-                        s_x[sw_row][sw_col] = fp8(0);
-                    }
+                    s_x[sw_row][sw_col] = fp8(0);
                 }
+                // }
             }
             __syncthreads();
+            // Print s_x
+            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+                for (int i = 0; i < BM; i++) {
+                    for (int j = 0; j < BK; j++) {
+                        printf("s_x[%d][%d]: %f", i, j, float(s_x[i][j]));
+                    }
+                    printf("\n");
+                }
+            }
             for (int i = threadIdx.x; i < 16 * 32; i += blockDim.x) {
                 int row = i / 32;
                 int col = i % 32;
@@ -170,7 +209,8 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
             wgmmaM64N16K32<1, 1, 1>(acc_local, &s_x[0][0], &s_wT[0][0]);
             warpgroup_commit_batch();
             warpgroup_wait<0>();
-            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && block == 0 && k == 0) {
+            __syncthreads();
+            if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 1 && threadIdx.y == 0 && block == 0 && k == 0) {
                 printf("acc_local: %f, %f, %f, %f\n", acc_local[0][0][0], acc_local[0][0][1], acc_local[0][1][0], acc_local[0][1][1]);
                 printf("acc_local: %f, %f, %f, %f\n", acc_local[1][0][0], acc_local[1][0][1], acc_local[1][1][0], acc_local[1][1][1]);
             }
@@ -204,6 +244,9 @@ __global__ void fused_moe_w8a8_wgmma_naive_kernel_v2(
     }
     if (token_src[0] < M)
     {
+        if (token_dest[0] == 0){
+            printf("warp_group_N: %d, lane_idx: %d, ThreadIdx.x: %d, BlockIdx.x: %d, BlockIdx.y: %d\n", warp_group_N, lane_idx, threadIdx.x, blockIdx.x, blockIdx.y);
+        }
         *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warp_group_N * BN + (lane_idx%4)*2) = __nv_bfloat162(f_acc[0][0][0], f_acc[0][0][1]);;
         *reinterpret_cast<__nv_bfloat162*>(out + token_dest[0]*N + warp_group_N * BN + (lane_idx%4)*2 + 8) = __nv_bfloat162(f_acc[0][1][0], f_acc[0][1][1]);;
     }
@@ -229,6 +272,9 @@ void fused_moe_w8a8_wgmma_naive_v2(
         int sorted_num
         )
 {
+    // 1st row of 1st tile is correct
+    // 2nd row of 1st tile is wrong. -> Correct loading of x?
+    // Tile to the left is all 0. -> Is a tile running there?
     constexpr int BM = 64;
     constexpr int BK = 32;
     constexpr int BN = 16;
